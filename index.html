@@ -346,7 +346,7 @@
               <div class="field full"><label>Observações do atendimento</label><textarea id="serviceEditNotes" placeholder="Informações sobre o andamento do serviço"></textarea></div>
             </div>
             <div class="actions">
-              <button class="btn" type="submit">Salvar atendimento</button>
+              <button class="btn" type="submit" id="saveServiceEditBtn">Salvar atendimento</button>
               <button class="btn secondary" type="button" onclick="closeServiceModal()">Cancelar</button>
             </div>
           </form>
@@ -495,7 +495,7 @@
       document.getElementById('clientsCount').textContent = state.clients.length + ' cliente' + (state.clients.length === 1 ? '' : 's');
       document.getElementById('clientsList').innerHTML = list.length ? `
         <table><thead><tr><th>Nome</th><th>CNPJ/CPF</th><th>Telefone</th><th>Endereço</th><th>Ações</th></tr></thead><tbody>
-          ${list.map(c => `<tr><td>${escapeHTML(c.name)}</td><td>${escapeHTML(c.doc)}</td><td>${escapeHTML(c.phone)}</td><td>${escapeHTML(c.address)}</td><td><button class="btn small secondary" onclick="editClient('${c.id}')">Editar</button> <button class="btn small" onclick="openWhatsApp('${c.id}')">WhatsApp</button></td></tr>`).join('')}
+          ${list.map(c => `<tr><td>${escapeHTML(c.name)}</td><td>${escapeHTML(c.doc)}</td><td>${escapeHTML(c.phone)}</td><td>${escapeHTML(c.address)}</td><td><button type="button" class="btn small secondary" onclick="editClient('${c.id}')">Editar</button> <button type="button" class="btn small" onclick="openWhatsApp('${c.id}')">WhatsApp</button></td></tr>`).join('')}
         </tbody></table>` : '<div class="empty">Nenhum cliente cadastrado.</div>';
     }
 
@@ -603,7 +603,7 @@
       if (paymentsList) paymentsList.innerHTML = renderSimpleTable(state.payments, 'Forma de recebimento', 'removePayment');
     }
     function renderSimpleTable(items, title, fn) {
-      return items.length ? `<table><thead><tr><th>${title}</th><th>Ações</th></tr></thead><tbody>${items.map((x,i)=>`<tr><td>${escapeHTML(x)}</td><td><button class="btn small danger" onclick="${fn}(${i})">Remover</button></td></tr>`).join('')}</tbody></table>` : '<div class="empty">Nenhum item cadastrado.</div>';
+      return items.length ? `<table><thead><tr><th>${title}</th><th>Ações</th></tr></thead><tbody>${items.map((x,i)=>`<tr><td>${escapeHTML(x)}</td><td><button type="button" class="btn small danger" onclick="${fn}(${i})">Remover</button></td></tr>`).join('')}</tbody></table>` : '<div class="empty">Nenhum item cadastrado.</div>';
     }
 
     function fillSelects() {
@@ -684,7 +684,7 @@
       document.getElementById('quotePreview').innerHTML = `
         <h3>${handle}</h3>
         <p class="muted-dark">Cliente: <strong>${escapeHTML(client?.name || 'Selecione um cliente')}</strong></p>
-        <div class="quote-items">${quoteItems.length ? quoteItems.map((i, index) => `<div class="quote-item"><span>${escapeHTML(i.category)}<br><button class="btn small danger" onclick="removeQuoteItem(${index})" style="margin-top:6px">Remover</button></span><strong>${money(i.value)}</strong></div>`).join('') : '<p class="muted-dark" style="padding:14px 0">Adicione categorias para formar o orçamento.</p>'}</div>
+        <div class="quote-items">${quoteItems.length ? quoteItems.map((i, index) => `<div class="quote-item"><span>${escapeHTML(i.category)}<br><button type="button" class="btn small danger" onclick="removeQuoteItem(${index})" style="margin-top:6px">Remover</button></span><strong>${money(i.value)}</strong></div>`).join('') : '<p class="muted-dark" style="padding:14px 0">Adicione categorias para formar o orçamento.</p>'}</div>
         <div class="quote-total"><span>Total</span><span>${money(total)}</span></div>`;
     }
     document.getElementById('quoteClient').addEventListener('change', renderQuotePreview);
@@ -696,7 +696,7 @@
         return q.handle.toLowerCase().includes(term) || (client?.name || '').toLowerCase().includes(term);
       });
       document.getElementById('quotesCount').textContent = state.quotes.length + ' orçamento' + (state.quotes.length === 1 ? '' : 's');
-      document.getElementById('quotesList').innerHTML = list.length ? `<table><thead><tr><th>Número</th><th>Cliente</th><th>Total</th><th>Status</th><th>Ações</th></tr></thead><tbody>${list.map(q => { const c = state.clients.find(x=>x.id===q.clientId); return `<tr><td><strong>${q.handle}</strong></td><td>${escapeHTML(c?.name || '')}</td><td>${money(q.total)}</td><td>${q.approved ? '<span class="badge">Aprovado</span>' : '<span class="badge">Em aberto</span>'}</td><td><button class="btn small secondary" onclick="editQuote('${q.id}')">Editar</button> <button class="btn small" onclick="generatePDF('${q.id}')">Gerar PDF</button> <button class="btn small" onclick="approveQuote('${q.id}')">Aprovado</button></td></tr>` }).join('')}</tbody></table>` : '<div class="empty">Nenhum orçamento salvo.</div>';
+      document.getElementById('quotesList').innerHTML = list.length ? `<table><thead><tr><th>Número</th><th>Cliente</th><th>Total</th><th>Status</th><th>Ações</th></tr></thead><tbody>${list.map(q => { const c = state.clients.find(x=>x.id===q.clientId); return `<tr><td><strong>${q.handle}</strong></td><td>${escapeHTML(c?.name || '')}</td><td>${money(q.total)}</td><td>${q.approved ? '<span class="badge">Aprovado</span>' : '<span class="badge">Em aberto</span>'}</td><td><button type="button" class="btn small secondary" onclick="editQuote('${q.id}')">Editar</button> <button type="button" class="btn small" onclick="generatePDF('${q.id}')">Gerar PDF</button> <button type="button" class="btn small" onclick="approveQuote('${q.id}')">Aprovado</button></td></tr>` }).join('')}</tbody></table>` : '<div class="empty">Nenhum orçamento salvo.</div>';
     }
 
     function approveQuote(id) {
@@ -749,14 +749,31 @@
     }
     function renderServices() {
       document.getElementById('servicesCount').textContent = state.services.length + ' atendimento' + (state.services.length === 1 ? '' : 's');
-      document.getElementById('servicesList').innerHTML = state.services.length ? `<table><thead><tr><th>Data</th><th>Orçamento</th><th>Cliente</th><th>Valor</th><th>Ações</th></tr></thead><tbody>${state.services.slice().reverse().map(s=>`<tr><td>${escapeHTML(s.date || '')}</td><td><strong>${escapeHTML(s.handle || '')}</strong></td><td>${escapeHTML(s.clientName || '')}</td><td>${money(s.value)}</td><td><button class="btn small secondary" onclick="openServiceModal('${s.id}')">Editar</button></td></tr>`).join('')}</tbody></table>` : '<div class="empty">Nenhum atendimento lançado. Aprove um orçamento para ele aparecer nesta tela.</div>';
+      document.getElementById('servicesList').innerHTML = state.services.length ? `<table><thead><tr><th>Data</th><th>Orçamento</th><th>Cliente</th><th>Valor</th><th>Ações</th></tr></thead><tbody>${state.services.slice().reverse().map(s=>`<tr><td>${escapeHTML(s.date || '')}</td><td><strong>${escapeHTML(s.handle || '')}</strong></td><td>${escapeHTML(s.clientName || '')}</td><td>${money(s.value)}</td><td><button type="button" class="btn small secondary" onclick="openServiceModal('${s.id}', event)">Editar</button></td></tr>`).join('')}</tbody></table>` : '<div class="empty">Nenhum atendimento lançado. Aprove um orçamento para ele aparecer nesta tela.</div>';
     }
 
-    function openServiceModal(id) {
+    function unlockServiceModalFields() {
+      ['serviceEditDate', 'serviceEditPayment', 'serviceEditDelivery', 'serviceEditNotes'].forEach(id => {
+        const field = document.getElementById(id);
+        if (!field) return;
+        field.disabled = false;
+        field.readOnly = false;
+        field.removeAttribute('disabled');
+        field.removeAttribute('readonly');
+      });
+    }
+
+    function openServiceModal(id, event) {
+      if (event) {
+        event.preventDefault();
+        event.stopPropagation();
+      }
+
       const service = state.services.find(s => s.id === id);
       if (!service) return;
 
       fillSelects();
+      unlockServiceModalFields();
 
       document.getElementById('serviceEditId').value = service.id;
       document.getElementById('serviceEditHandle').value = service.handle || '';
@@ -768,6 +785,10 @@
       document.getElementById('serviceEditNotes').value = service.notes || '';
 
       document.getElementById('serviceModal').classList.add('active');
+      setTimeout(() => {
+        unlockServiceModalFields();
+        document.getElementById('serviceEditDate')?.focus();
+      }, 50);
     }
 
     function closeServiceModal() {
@@ -778,6 +799,7 @@
 
     document.getElementById('serviceEditForm').addEventListener('submit', e => {
       e.preventDefault();
+      e.stopPropagation();
 
       const id = document.getElementById('serviceEditId').value;
       const service = state.services.find(s => s.id === id);
@@ -794,8 +816,12 @@
       refreshAll();
     });
 
+    document.querySelector('#serviceModal .modal-card')?.addEventListener('click', e => {
+      e.stopPropagation();
+    });
+
     document.getElementById('serviceModal').addEventListener('click', e => {
-      if (e.target.id === 'serviceModal') closeServiceModal();
+      if (e.target === e.currentTarget) closeServiceModal();
     });
 
     function refreshAll() { normalizeLists(); fillSelects(); renderClients(); renderConfigs(); renderQuotePreview(); renderQuotes(); renderServices(); }
