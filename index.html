@@ -289,7 +289,8 @@
       <section id="recebimentos" class="screen">
         <div class="grid">
           <div class="card span-12">
-            <div class="card-title"><h3>Recebimentos</h3><span class="badge">Em construção</span></div>
+            <div class="card-title"><h3>Recebimentos</h3><span class="badge" id="receivablesCount">0 recebimentos</span></div>
+            <div id="receivablesList"></div>
           </div>
         </div>
       </section>
@@ -342,6 +343,20 @@
               <div class="field"><label>Valor</label><input id="serviceEditValue" readonly /></div>
               <div class="field"><label>Data do atendimento</label><input id="serviceEditDate" type="date" /></div>
               <div class="field"><label>Forma de recebimento</label><select id="serviceEditPayment"></select></div>
+              <div class="field"><label>Parcelas</label><select id="serviceEditInstallments">
+                <option value="1">1 parcela</option>
+                <option value="2">2 parcelas</option>
+                <option value="3">3 parcelas</option>
+                <option value="4">4 parcelas</option>
+                <option value="5">5 parcelas</option>
+                <option value="6">6 parcelas</option>
+                <option value="7">7 parcelas</option>
+                <option value="8">8 parcelas</option>
+                <option value="9">9 parcelas</option>
+                <option value="10">10 parcelas</option>
+                <option value="11">11 parcelas</option>
+                <option value="12">12 parcelas</option>
+              </select></div>
               <div class="field"><label>Data prevista de entrega</label><input id="serviceEditDelivery" type="date" /></div>
               <div class="field full"><label>Observações do atendimento</label><textarea id="serviceEditNotes" placeholder="Informações sobre o andamento do serviço"></textarea></div>
             </div>
@@ -373,6 +388,7 @@
         payments: ['Pix', 'Dinheiro', 'Cartão de crédito', 'Cartão de débito'],
         quotes: [],
         services: [],
+        receivables: [],
         quoteSequence: 1
       };
     }
@@ -393,6 +409,7 @@
           payments: Array.isArray(parsed.payments) ? parsed.payments : defaults.payments,
           quotes: Array.isArray(parsed.quotes) ? parsed.quotes : [],
           services: Array.isArray(parsed.services) ? parsed.services : [],
+          receivables: Array.isArray(parsed.receivables) ? parsed.receivables : [],
           quoteSequence: Number(parsed.quoteSequence || defaults.quoteSequence)
         };
       } catch (error) {
@@ -426,6 +443,7 @@
       if (!Array.isArray(state.clients)) state.clients = [];
       if (!Array.isArray(state.quotes)) state.quotes = [];
       if (!Array.isArray(state.services)) state.services = [];
+      if (!Array.isArray(state.receivables)) state.receivables = [];
     }
 
     document.querySelectorAll('.nav-btn').forEach(btn => {
@@ -713,6 +731,48 @@
       }).join('')}</tbody></table>` : '<div class="empty">Nenhum orçamento salvo.</div>';
     }
 
+
+    function serviceSheetRow(service) {
+      return [
+        service.id,
+        service.date || '',
+        service.handle || '',
+        service.clientName || '',
+        service.value || 0,
+        service.payment || '',
+        service.deliveryDate || '',
+        service.notes || '',
+        service.status || 'Ativo',
+        service.installments || 1,
+        service.receiptApproved ? 'Sim' : 'Não'
+      ];
+    }
+
+    function receivableSheetRow(item) {
+      return [
+        item.id,
+        item.dueDate || '',
+        item.clientName || '',
+        item.reference || '',
+        item.value || 0,
+        item.payment || '',
+        item.status || 'Pendente'
+      ];
+    }
+
+    function addDays(date, days) {
+      const d = new Date(date + 'T00:00:00');
+      d.setDate(d.getDate() + days);
+      return d.toISOString().slice(0, 10);
+    }
+
+    function splitValueInCents(total, parts) {
+      const cents = Math.round(Number(total || 0) * 100);
+      const base = Math.floor(cents / parts);
+      const remainder = cents % parts;
+      return Array.from({ length: parts }, (_, index) => (base + (index < remainder ? 1 : 0)) / 100);
+    }
+
     function approveQuote(id) {
       const quote = state.quotes.find(q => q.id === id);
       if (!quote) return;
@@ -734,10 +794,12 @@
           payment: '',
           deliveryDate: '',
           notes: '',
+          installments: 1,
+          receiptApproved: false,
           status: 'Ativo'
         };
         state.services.push(service);
-        sendToSheet('Atendimentos', [service.id, service.date, service.handle, service.clientName, service.value, service.payment, service.deliveryDate, service.notes, service.status], service.id);
+        sendToSheet('Atendimentos', serviceSheetRow(service), service.id);
       }
       saveState();
       refreshAll();
@@ -765,11 +827,76 @@
     function renderServices() {
       const activeServices = state.services.filter(s => s.status !== 'Cancelado');
       document.getElementById('servicesCount').textContent = activeServices.length + ' atendimento' + (activeServices.length === 1 ? '' : 's');
-      document.getElementById('servicesList').innerHTML = activeServices.length ? `<table><thead><tr><th>Data</th><th>Orçamento</th><th>Cliente</th><th>Valor</th><th>Ações</th></tr></thead><tbody>${activeServices.slice().reverse().map(s=>`<tr><td>${escapeHTML(s.date || '')}</td><td><strong>${escapeHTML(s.handle || '')}</strong></td><td>${escapeHTML(s.clientName || '')}</td><td>${money(s.value)}</td><td><button type="button" class="btn small secondary" onclick="openServiceModal('${s.id}', event)">Editar</button> <button type="button" class="btn small danger" onclick="cancelService('${s.id}', event)">Cancelar lançamento</button></td></tr>`).join('')}</tbody></table>` : '<div class="empty">Nenhum atendimento lançado. Aprove um orçamento para ele aparecer nesta tela.</div>';
+      document.getElementById('servicesList').innerHTML = activeServices.length ? `<table><thead><tr><th>Data</th><th>Orçamento</th><th>Cliente</th><th>Valor</th><th>Parcelas</th><th>Recebimento</th><th>Ações</th></tr></thead><tbody>${activeServices.slice().reverse().map(s=>{
+        const receiptCell = s.receiptApproved
+          ? '<span class="badge">Recebimento aprovado</span>'
+          : `<button type="button" class="btn small" onclick="approveServiceReceipt('${s.id}', event)">Recebimento Aprovado</button>`;
+        return `<tr><td>${escapeHTML(s.date || '')}</td><td><strong>${escapeHTML(s.handle || '')}</strong></td><td>${escapeHTML(s.clientName || '')}</td><td>${money(s.value)}</td><td>${Number(s.installments || 1)}x</td><td>${receiptCell}</td><td><button type="button" class="btn small secondary" onclick="openServiceModal('${s.id}', event)">Editar</button> <button type="button" class="btn small danger" onclick="cancelService('${s.id}', event)">Cancelar lançamento</button></td></tr>`
+      }).join('')}</tbody></table>` : '<div class="empty">Nenhum atendimento lançado. Aprove um orçamento para ele aparecer nesta tela.</div>';
     }
 
+    function approveServiceReceipt(id, event) {
+      if (event) {
+        event.preventDefault();
+        event.stopPropagation();
+      }
+
+      const service = state.services.find(s => s.id === id);
+      if (!service || service.status === 'Cancelado') return;
+
+      if (!service.payment) {
+        alert('Informe a forma de recebimento no atendimento antes de aprovar o recebimento.');
+        openServiceModal(id, event);
+        return;
+      }
+
+      if (service.receiptApproved) return;
+
+      const installments = Math.min(12, Math.max(1, Number(service.installments || 1)));
+      const today = new Date().toISOString().slice(0, 10);
+      const values = splitValueInCents(service.value, installments);
+
+      const newReceivables = values.map((value, index) => ({
+        id: uid(),
+        serviceId: service.id,
+        quoteId: service.quoteId || '',
+        handle: service.handle || '',
+        clientName: service.clientName || '',
+        payment: service.payment || '',
+        installment: index + 1,
+        installments,
+        dueDate: addDays(today, index * 30),
+        value,
+        status: 'Pendente',
+        reference: `${service.handle || 'Atendimento'} - Parcela ${index + 1}/${installments}`
+      }));
+
+      state.receivables.push(...newReceivables);
+      service.receiptApproved = true;
+      service.receiptApprovedDate = today;
+
+      sendToSheet('Atendimentos', serviceSheetRow(service), service.id);
+      newReceivables.forEach(item => sendToSheet('Recebimentos', receivableSheetRow(item), item.id));
+
+      saveState();
+      refreshAll();
+      openScreen('recebimentos');
+    }
+
+    function renderReceivables() {
+      const list = Array.isArray(state.receivables) ? state.receivables.slice().sort((a, b) => String(a.dueDate || '').localeCompare(String(b.dueDate || ''))) : [];
+      const count = document.getElementById('receivablesCount');
+      const target = document.getElementById('receivablesList');
+      if (count) count.textContent = list.length + ' recebimento' + (list.length === 1 ? '' : 's');
+      if (!target) return;
+
+      const total = list.reduce((sum, item) => sum + Number(item.value || 0), 0);
+      target.innerHTML = list.length ? `<div class="badge" style="margin-bottom:14px;display:inline-block;">Total previsto: ${money(total)}</div><table><thead><tr><th>Vencimento</th><th>Cliente</th><th>Referência</th><th>Parcela</th><th>Forma</th><th>Valor</th><th>Status</th></tr></thead><tbody>${list.map(item => `<tr><td>${escapeHTML(item.dueDate || '')}</td><td>${escapeHTML(item.clientName || '')}</td><td>${escapeHTML(item.handle || '')}</td><td>${item.installment}/${item.installments}</td><td>${escapeHTML(item.payment || '')}</td><td>${money(item.value)}</td><td><span class="badge">${escapeHTML(item.status || 'Pendente')}</span></td></tr>`).join('')}</tbody></table>` : '<div class="empty">Nenhum recebimento aprovado ainda.</div>';
+    }
+
+
     function unlockServiceModalFields() {
-      ['serviceEditDate', 'serviceEditPayment', 'serviceEditDelivery', 'serviceEditNotes'].forEach(id => {
+      ['serviceEditDate', 'serviceEditPayment', 'serviceEditInstallments', 'serviceEditDelivery', 'serviceEditNotes'].forEach(id => {
         const field = document.getElementById(id);
         if (!field) return;
         field.disabled = false;
@@ -797,6 +924,7 @@
       document.getElementById('serviceEditValue').value = money(service.value);
       document.getElementById('serviceEditDate').value = service.date || new Date().toISOString().slice(0, 10);
       document.getElementById('serviceEditPayment').value = service.payment || '';
+      document.getElementById('serviceEditInstallments').value = String(service.installments || 1);
       document.getElementById('serviceEditDelivery').value = service.deliveryDate || '';
       document.getElementById('serviceEditNotes').value = service.notes || '';
 
@@ -823,11 +951,12 @@
 
       service.date = document.getElementById('serviceEditDate').value;
       service.payment = document.getElementById('serviceEditPayment').value;
+      service.installments = Number(document.getElementById('serviceEditInstallments').value || 1);
       service.deliveryDate = document.getElementById('serviceEditDelivery').value;
       service.notes = document.getElementById('serviceEditNotes').value.trim();
 
       service.status = service.status || 'Ativo';
-      sendToSheet('Atendimentos', [service.id, service.date, service.handle, service.clientName, service.value, service.payment, service.deliveryDate, service.notes, service.status], service.id);
+      sendToSheet('Atendimentos', serviceSheetRow(service), service.id);
       saveState();
       closeServiceModal();
       refreshAll();
@@ -856,7 +985,14 @@
 
       service.status = 'Cancelado';
       service.notes = service.notes ? `${service.notes} | Atendimento cancelado` : 'Atendimento cancelado';
-      sendToSheet('Atendimentos', [service.id, service.date, service.handle, service.clientName, service.value, service.payment, service.deliveryDate, service.notes, service.status], service.id);
+      sendToSheet('Atendimentos', serviceSheetRow(service), service.id);
+
+      const relatedReceivables = state.receivables.filter(r => r.serviceId === service.id);
+      relatedReceivables.forEach(r => {
+        r.status = 'Cancelado';
+        sendToSheet('Recebimentos', receivableSheetRow(r), r.id);
+      });
+      state.receivables = state.receivables.filter(r => r.serviceId !== service.id);
 
       state.services.splice(serviceIndex, 1);
       saveState();
@@ -872,7 +1008,7 @@
       if (e.target === e.currentTarget) closeServiceModal();
     });
 
-    function refreshAll() { normalizeLists(); fillSelects(); renderClients(); renderConfigs(); renderQuotePreview(); renderQuotes(); renderServices(); }
+    function refreshAll() { normalizeLists(); fillSelects(); renderClients(); renderConfigs(); renderQuotePreview(); renderQuotes(); renderServices(); renderReceivables(); }
     function escapeHTML(value) { return String(value ?? '').replace(/[&<>'"]/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[m])); }
     function escapeAttr(value) { return escapeHTML(value).replace(/`/g, '&#96;'); }
     refreshAll();
