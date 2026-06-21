@@ -374,6 +374,20 @@
         </div>
       </div>
 
+
+      <div id="clientHistoryModal" class="modal-overlay" onclick="if(event.target === this) closeClientHistoryModal()">
+        <div class="modal-card" style="width:min(980px, 100%); max-height:90vh; overflow:auto;" onclick="event.stopPropagation()">
+          <div class="modal-head">
+            <div>
+              <h3 id="clientHistoryTitle">Atendimentos do cliente</h3>
+              <p id="clientHistorySubtitle">Resumo de orçamentos, atendimentos e recebimentos.</p>
+            </div>
+            <button type="button" class="modal-close" onclick="closeClientHistoryModal()">×</button>
+          </div>
+          <div id="clientHistoryContent"></div>
+        </div>
+      </div>
+
       <div class="footer">Desenvolvido por <strong>Roberto Lino</strong></div>
     </main>
   </div>
@@ -514,13 +528,109 @@
       if (!phone) return;
       window.open(`https://web.whatsapp.com/send?phone=55${phone}`, '_blank');
     }
+
+    function closeClientHistoryModal() {
+      const modal = document.getElementById('clientHistoryModal');
+      if (modal) modal.classList.remove('active');
+    }
+
+    function receivableSummaryByHandle(handle) {
+      const items = Array.isArray(state.receivables)
+        ? state.receivables.filter(r => String(r.handle || '') === String(handle || '') && (r.status || 'Pendente') !== 'Cancelado')
+        : [];
+      const total = items.reduce((sum, r) => sum + Number(r.value || 0), 0);
+      const received = items.filter(r => (r.status || 'Pendente') === 'Recebido').reduce((sum, r) => sum + Number(r.value || 0), 0);
+      const pending = total - received;
+      const status = !items.length ? 'Sem recebimento' : pending <= 0 ? 'Recebido' : received > 0 ? 'Parcial' : 'Pendente';
+      return { items, total, received, pending, status };
+    }
+
+    function openClientHistoryModal(clientId, event) {
+      if (event) {
+        event.preventDefault();
+        event.stopPropagation();
+      }
+
+      const client = state.clients.find(c => c.id === clientId);
+      if (!client) return;
+
+      const modal = document.getElementById('clientHistoryModal');
+      const title = document.getElementById('clientHistoryTitle');
+      const subtitle = document.getElementById('clientHistorySubtitle');
+      const content = document.getElementById('clientHistoryContent');
+      if (!modal || !content) return;
+
+      if (title) title.textContent = 'Atendimentos de ' + (client.name || 'Cliente');
+      if (subtitle) subtitle.textContent = 'Resumo de orçamentos, valores, status do orçamento e recebimentos.';
+
+      const quotes = Array.isArray(state.quotes)
+        ? state.quotes.filter(q => String(q.clientId || '') === String(client.id || '') || String(q.clientName || '') === String(client.name || ''))
+        : [];
+      const services = Array.isArray(state.services)
+        ? state.services.filter(s => String(s.clientId || '') === String(client.id || '') || String(s.clientName || '') === String(client.name || ''))
+        : [];
+
+      const quoteRows = quotes.slice().reverse().map(q => {
+        const service = services.find(s => String(s.handle || '') === String(q.handle || ''));
+        const rec = receivableSummaryByHandle(q.handle);
+        const quoteStatus = q.status || 'Em aberto';
+        const serviceStatus = service
+          ? (service.receiptApproved ? 'Recebimento aprovado' : 'Atendimento lançado')
+          : 'Sem atendimento';
+        const detailRows = rec.items.length
+          ? `<div style="margin-top:8px;font-size:12px;color:var(--muted);">${rec.items.map(r => `${escapeHTML(String(r.installment || ''))}/${escapeHTML(String(r.installments || ''))} - ${escapeHTML(r.dueDate || '')} - ${money(r.value)} - ${escapeHTML(r.status || 'Pendente')}`).join('<br>')}</div>`
+          : '';
+        return `<tr>
+          <td>${escapeHTML(q.handle || '')}</td>
+          <td>${escapeHTML(q.date || '')}</td>
+          <td>${money(q.total || 0)}</td>
+          <td><span class="badge">${escapeHTML(quoteStatus)}</span></td>
+          <td><span class="badge">${escapeHTML(serviceStatus)}</span></td>
+          <td><strong>${escapeHTML(rec.status)}</strong><br><span style="font-size:12px;color:var(--muted);">Recebido: ${money(rec.received)}<br>Em aberto: ${money(rec.pending)}</span>${detailRows}</td>
+        </tr>`;
+      }).join('');
+
+      const serviceWithoutQuote = services.filter(s => !quotes.some(q => String(q.handle || '') === String(s.handle || '')));
+      const extraRows = serviceWithoutQuote.slice().reverse().map(s => {
+        const rec = receivableSummaryByHandle(s.handle);
+        return `<tr>
+          <td>${escapeHTML(s.handle || '')}</td>
+          <td>${escapeHTML(s.date || '')}</td>
+          <td>${money(s.value || 0)}</td>
+          <td><span class="badge">Sem orçamento vinculado</span></td>
+          <td><span class="badge">${s.receiptApproved ? 'Recebimento aprovado' : 'Atendimento lançado'}</span></td>
+          <td><strong>${escapeHTML(rec.status)}</strong><br><span style="font-size:12px;color:var(--muted);">Recebido: ${money(rec.received)}<br>Em aberto: ${money(rec.pending)}</span></td>
+        </tr>`;
+      }).join('');
+
+      const totalQuotes = quotes.reduce((sum, q) => sum + Number(q.total || 0), 0);
+      const allReceivables = Array.isArray(state.receivables)
+        ? state.receivables.filter(r => String(r.clientId || '') === String(client.id || '') || String(r.clientName || '') === String(client.name || ''))
+        : [];
+      const activeReceivables = allReceivables.filter(r => (r.status || 'Pendente') !== 'Cancelado');
+      const receivedTotal = activeReceivables.filter(r => (r.status || 'Pendente') === 'Recebido').reduce((sum, r) => sum + Number(r.value || 0), 0);
+      const openTotal = activeReceivables.filter(r => (r.status || 'Pendente') !== 'Recebido').reduce((sum, r) => sum + Number(r.value || 0), 0);
+
+      const rows = quoteRows + extraRows;
+      content.innerHTML = `
+        <div class="grid" style="margin-bottom:18px;">
+          <div class="card span-4" style="box-shadow:none;"><div class="badge">Orçamentos</div><h3 style="margin-top:10px;">${quotes.length}</h3><p style="color:var(--muted);font-size:13px;">Total: ${money(totalQuotes)}</p></div>
+          <div class="card span-4" style="box-shadow:none;"><div class="badge">Recebido</div><h3 style="margin-top:10px;">${money(receivedTotal)}</h3><p style="color:var(--muted);font-size:13px;">Parcelas marcadas como recebidas</p></div>
+          <div class="card span-4" style="box-shadow:none;"><div class="badge">Em aberto</div><h3 style="margin-top:10px;">${money(openTotal)}</h3><p style="color:var(--muted);font-size:13px;">Parcelas pendentes</p></div>
+        </div>
+        ${rows ? `<table><thead><tr><th>Orçamento</th><th>Data</th><th>Valor</th><th>Status orçamento</th><th>Status atendimento</th><th>Recebimentos</th></tr></thead><tbody>${rows}</tbody></table>` : '<div class="empty">Nenhum atendimento ou orçamento encontrado para este cliente.</div>'}
+      `;
+
+      modal.classList.add('active');
+    }
+
     function renderClients() {
       const term = document.getElementById('clientSearch').value.toLowerCase();
       const list = state.clients.filter(c => c.name.toLowerCase().includes(term));
       document.getElementById('clientsCount').textContent = state.clients.length + ' cliente' + (state.clients.length === 1 ? '' : 's');
       document.getElementById('clientsList').innerHTML = list.length ? `
         <table><thead><tr><th>Nome</th><th>CNPJ/CPF</th><th>Telefone</th><th>Endereço</th><th>Ações</th></tr></thead><tbody>
-          ${list.map(c => `<tr><td>${escapeHTML(c.name)}</td><td>${escapeHTML(c.doc)}</td><td>${escapeHTML(c.phone)}</td><td>${escapeHTML(c.address)}</td><td><button type="button" class="btn small secondary" onclick="editClient('${c.id}')">Editar</button> <button type="button" class="btn small" onclick="openWhatsApp('${c.id}')">WhatsApp</button></td></tr>`).join('')}
+          ${list.map(c => `<tr><td>${escapeHTML(c.name)}</td><td>${escapeHTML(c.doc)}</td><td>${escapeHTML(c.phone)}</td><td>${escapeHTML(c.address)}</td><td><button type="button" class="btn small secondary" onclick="editClient('${c.id}')">Editar</button> <button type="button" class="btn small" onclick="openWhatsApp('${c.id}')">WhatsApp</button> <button type="button" class="btn small secondary" onclick="openClientHistoryModal('${c.id}', event)">Atendimentos</button></td></tr>`).join('')}
         </tbody></table>` : '<div class="empty">Nenhum cliente cadastrado.</div>';
     }
 
