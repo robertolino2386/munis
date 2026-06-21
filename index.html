@@ -179,6 +179,19 @@
       font-weight: 900;
     }
 
+
+
+    .kpi-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 14px; margin-bottom: 18px; }
+    .kpi-card { background: rgba(13, 22, 40, .92); border: 1px solid rgba(22,139,255,.18); border-radius: 16px; padding: 16px; }
+    .kpi-card span { display: block; color: var(--muted); font-size: 12px; font-weight: 800; text-transform: uppercase; letter-spacing: .7px; }
+    .kpi-card strong { display: block; margin-top: 8px; font-size: 22px; }
+    .dashboard-filters { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 12px; align-items: end; margin-bottom: 18px; }
+    .chart-wrap { min-height: 300px; }
+    .chart-wrap canvas { width: 100%; height: 280px; background: #070b13; border: 1px solid rgba(22,139,255,.18); border-radius: 14px; padding: 10px; }
+    .decision-list { display: grid; gap: 10px; }
+    .decision-item { padding: 12px 14px; border-radius: 14px; border: 1px solid rgba(22,139,255,.18); background: rgba(7,11,19,.82); color: #dce9f7; font-size: 14px; }
+    .decision-item strong { color: #fff; }
+
     .footer { margin-top: auto; padding-top: 24px; color: #fff; font-size: 11px; text-align: center; opacity: .82; }
     .footer strong { font-style: italic; }
 
@@ -195,6 +208,7 @@
       nav { grid-template-columns: 1fr; }
       .field { grid-column: span 12; }
       table { display: block; overflow-x: auto; white-space: nowrap; }
+      .kpi-grid, .dashboard-filters { grid-template-columns: 1fr; }
     }
   </style>
 </head>
@@ -213,6 +227,7 @@
         <button class="nav-btn" data-screen="orcamentos"><span class="nav-icon">📄</span>Orçamentos</button>
         <button class="nav-btn" data-screen="atendimentos"><span class="nav-icon">🛠️</span>Atendimentos</button>
         <button class="nav-btn" data-screen="recebimentos"><span class="nav-icon">💰</span>Recebimentos</button>
+        <button class="nav-btn" data-screen="dashboard"><span class="nav-icon">📊</span>Dashboard</button>
         <button class="nav-btn" data-screen="configuracoes"><span class="nav-icon">⚙️</span>Configurações</button>
       </nav>
     </aside>
@@ -297,6 +312,48 @@
               <button class="btn small" type="button" onclick="setReceivablesFilter('avencer')">A vencer</button>
             </div>
             <div id="receivablesList"></div>
+          </div>
+        </div>
+      </section>
+
+
+      <section id="dashboard" class="screen">
+        <div class="grid">
+          <div class="card span-12">
+            <div class="card-title"><h3>Dashboard gerencial</h3><span class="badge">Análises e tomada de decisão</span></div>
+            <div class="dashboard-filters">
+              <div><label>Mês</label><select id="dashboardMonth" onchange="renderDashboard()"></select></div>
+              <div><label>Ano</label><select id="dashboardYear" onchange="renderDashboard()"></select></div>
+              <div><label>Status recebimento</label><select id="dashboardStatus" onchange="renderDashboard()"><option value="todos">Todos</option><option value="Recebido">Recebido</option><option value="Pendente">Pendente</option><option value="Vencido">Vencido</option></select></div>
+              <div><label>Cliente</label><select id="dashboardClient" onchange="renderDashboard()"><option value="todos">Todos</option></select></div>
+              <div><button class="btn secondary" type="button" onclick="clearDashboardFilters()">Limpar filtros</button></div>
+            </div>
+            <div id="dashboardKpis" class="kpi-grid"></div>
+          </div>
+
+          <div class="card span-6 chart-wrap">
+            <div class="card-title"><h3>Recebimentos por mês</h3><span class="badge">Evolução</span></div>
+            <canvas id="chartMonthly"></canvas>
+          </div>
+
+          <div class="card span-6 chart-wrap">
+            <div class="card-title"><h3>Status dos recebimentos</h3><span class="badge">Rosca</span></div>
+            <canvas id="chartStatus"></canvas>
+          </div>
+
+          <div class="card span-6 chart-wrap">
+            <div class="card-title"><h3>Receita por categoria</h3><span class="badge">Colunas</span></div>
+            <canvas id="chartCategories"></canvas>
+          </div>
+
+          <div class="card span-6 chart-wrap">
+            <div class="card-title"><h3>Top clientes</h3><span class="badge">Ranking</span></div>
+            <canvas id="chartClients"></canvas>
+          </div>
+
+          <div class="card span-12">
+            <div class="card-title"><h3>Alertas e decisões sugeridas</h3><span class="badge">Gestão</span></div>
+            <div id="dashboardDecisions" class="decision-list"></div>
           </div>
         </div>
       </section>
@@ -927,6 +984,7 @@
       document.querySelectorAll('.nav-btn').forEach(b => b.classList.toggle('active', b.dataset.screen === screenId));
       document.querySelectorAll('.screen').forEach(s => s.classList.toggle('active', s.id === screenId));
       document.getElementById('pageTitle').textContent = document.querySelector(`[data-screen="${screenId}"]`)?.textContent.trim() || '';
+      if (screenId === 'dashboard') setTimeout(renderDashboard, 50);
     }
     function generatePDF(id) {
       const q = state.quotes.find(x => x.id === id); if (!q) return;
@@ -1249,7 +1307,237 @@
       if (e.target === e.currentTarget) closeServiceModal();
     });
 
-    function refreshAll() { normalizeLists(); fillSelects(); renderClients(); renderConfigs(); renderQuotePreview(); renderQuotes(); renderServices(); renderReceivables(); }
+
+
+    function parseDateSafe(value) {
+      if (!value) return null;
+      const d = new Date(String(value).slice(0, 10) + 'T00:00:00');
+      return isNaN(d.getTime()) ? null : d;
+    }
+
+    function monthKey(dateText) {
+      const d = parseDateSafe(dateText);
+      if (!d) return '';
+      return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+    }
+
+    function getReceivableRealStatus(item) {
+      const status = item.status || 'Pendente';
+      if (status === 'Recebido' || status === 'Cancelado') return status;
+      return isOverdue(item.dueDate) ? 'Vencido' : 'Pendente';
+    }
+
+    function getDashboardFilteredData() {
+      const month = document.getElementById('dashboardMonth')?.value || 'todos';
+      const year = document.getElementById('dashboardYear')?.value || 'todos';
+      const status = document.getElementById('dashboardStatus')?.value || 'todos';
+      const client = document.getElementById('dashboardClient')?.value || 'todos';
+      let receivables = Array.isArray(state.receivables) ? state.receivables.filter(r => (r.status || 'Pendente') !== 'Cancelado') : [];
+
+      receivables = receivables.filter(r => {
+        const d = parseDateSafe(r.dueDate);
+        const realStatus = getReceivableRealStatus(r);
+        const service = state.services.find(s => s.id === r.serviceId);
+        const clientId = r.clientId || service?.clientId || '';
+        if (year !== 'todos' && (!d || String(d.getFullYear()) !== year)) return false;
+        if (month !== 'todos' && (!d || String(d.getMonth() + 1).padStart(2, '0') !== month)) return false;
+        if (status !== 'todos' && realStatus !== status) return false;
+        if (client !== 'todos' && String(clientId || r.clientName || '') !== client) return false;
+        return true;
+      });
+
+      const handles = new Set(receivables.map(r => r.handle).filter(Boolean));
+      const services = state.services.filter(s => s.status !== 'Cancelado' && (client === 'todos' || String(s.clientId || s.clientName || '') === client));
+      const quotes = state.quotes.filter(q => client === 'todos' || String(q.clientId || q.clientName || '') === client || handles.has(q.handle));
+      return { receivables, services, quotes };
+    }
+
+    function populateDashboardFilters() {
+      const monthSelect = document.getElementById('dashboardMonth');
+      const yearSelect = document.getElementById('dashboardYear');
+      const clientSelect = document.getElementById('dashboardClient');
+      if (!monthSelect || !yearSelect || !clientSelect) return;
+
+      const currentMonth = monthSelect.value || 'todos';
+      const currentYear = yearSelect.value || 'todos';
+      const currentClient = clientSelect.value || 'todos';
+
+      monthSelect.innerHTML = '<option value="todos">Todos</option>' + [
+        ['01','Janeiro'], ['02','Fevereiro'], ['03','Março'], ['04','Abril'], ['05','Maio'], ['06','Junho'],
+        ['07','Julho'], ['08','Agosto'], ['09','Setembro'], ['10','Outubro'], ['11','Novembro'], ['12','Dezembro']
+      ].map(([v,l]) => `<option value="${v}">${l}</option>`).join('');
+
+      const years = new Set();
+      state.receivables.forEach(r => { const d = parseDateSafe(r.dueDate); if (d) years.add(d.getFullYear()); });
+      state.quotes.forEach(q => { const d = parseDateSafe(q.date); if (d) years.add(d.getFullYear()); });
+      if (!years.size) years.add(new Date().getFullYear());
+      yearSelect.innerHTML = '<option value="todos">Todos</option>' + Array.from(years).sort().map(y => `<option value="${y}">${y}</option>`).join('');
+
+      clientSelect.innerHTML = '<option value="todos">Todos</option>' + state.clients.map(c => `<option value="${escapeAttr(c.id)}">${escapeHTML(c.name)}</option>`).join('');
+      monthSelect.value = [...monthSelect.options].some(o => o.value === currentMonth) ? currentMonth : 'todos';
+      yearSelect.value = [...yearSelect.options].some(o => o.value === currentYear) ? currentYear : 'todos';
+      clientSelect.value = [...clientSelect.options].some(o => o.value === currentClient) ? currentClient : 'todos';
+    }
+
+    function clearDashboardFilters() {
+      const ids = ['dashboardMonth', 'dashboardYear', 'dashboardStatus', 'dashboardClient'];
+      ids.forEach(id => { const el = document.getElementById(id); if (el) el.value = 'todos'; });
+      renderDashboard();
+    }
+
+    function groupSum(items, keyFn, valueFn) {
+      const map = new Map();
+      items.forEach(item => {
+        const key = keyFn(item) || 'Não informado';
+        map.set(key, (map.get(key) || 0) + Number(valueFn(item) || 0));
+      });
+      return Array.from(map, ([label, value]) => ({ label, value }));
+    }
+
+    function resizeCanvas(canvas) {
+      if (!canvas) return null;
+      const rect = canvas.getBoundingClientRect();
+      const ratio = window.devicePixelRatio || 1;
+      canvas.width = Math.max(320, Math.floor(rect.width * ratio));
+      canvas.height = Math.max(260, Math.floor(rect.height * ratio));
+      const ctx = canvas.getContext('2d');
+      ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
+      return { ctx, width: rect.width, height: rect.height };
+    }
+
+    function clearChart(ctx, width, height) {
+      ctx.clearRect(0, 0, width, height);
+      ctx.fillStyle = '#070b13';
+      ctx.fillRect(0, 0, width, height);
+      ctx.font = '12px Arial';
+      ctx.fillStyle = '#a9bad0';
+    }
+
+    function drawEmptyChart(canvas, message) {
+      const data = resizeCanvas(canvas); if (!data) return;
+      const { ctx, width, height } = data;
+      clearChart(ctx, width, height);
+      ctx.textAlign = 'center';
+      ctx.fillStyle = '#a9bad0';
+      ctx.fillText(message || 'Sem dados para exibir', width / 2, height / 2);
+    }
+
+    function drawBarChart(canvasId, rows, options = {}) {
+      const canvas = document.getElementById(canvasId);
+      if (!rows || !rows.length) return drawEmptyChart(canvas, 'Sem dados para o filtro selecionado');
+      const data = resizeCanvas(canvas); if (!data) return;
+      const { ctx, width, height } = data;
+      clearChart(ctx, width, height);
+      const margin = { left: 58, right: 18, top: 22, bottom: 54 };
+      const chartW = width - margin.left - margin.right;
+      const chartH = height - margin.top - margin.bottom;
+      const max = Math.max(...rows.map(r => Number(r.value || 0)), 1);
+      ctx.strokeStyle = 'rgba(255,255,255,.12)';
+      ctx.beginPath(); ctx.moveTo(margin.left, margin.top); ctx.lineTo(margin.left, margin.top + chartH); ctx.lineTo(margin.left + chartW, margin.top + chartH); ctx.stroke();
+      const barW = chartW / rows.length * .62;
+      rows.forEach((r, i) => {
+        const x = margin.left + (chartW / rows.length) * i + (chartW / rows.length - barW) / 2;
+        const h = (Number(r.value || 0) / max) * chartH;
+        const y = margin.top + chartH - h;
+        const grad = ctx.createLinearGradient(0, y, 0, y + h);
+        grad.addColorStop(0, '#168bff'); grad.addColorStop(1, '#0059b8');
+        ctx.fillStyle = grad;
+        ctx.fillRect(x, y, barW, h);
+        ctx.fillStyle = '#dce9f7';
+        ctx.font = '11px Arial'; ctx.textAlign = 'center';
+        ctx.fillText(options.money ? money(r.value) : String(Math.round(r.value)), x + barW / 2, Math.max(14, y - 5));
+        ctx.save();
+        ctx.translate(x + barW / 2, margin.top + chartH + 12);
+        ctx.rotate(-0.55);
+        ctx.fillStyle = '#a9bad0';
+        ctx.fillText(String(r.label).slice(0, 14), 0, 0);
+        ctx.restore();
+      });
+    }
+
+    function drawLineChart(canvasId, rows) {
+      const canvas = document.getElementById(canvasId);
+      if (!rows || !rows.length) return drawEmptyChart(canvas, 'Sem evolução para exibir');
+      const data = resizeCanvas(canvas); if (!data) return;
+      const { ctx, width, height } = data;
+      clearChart(ctx, width, height);
+      const margin = { left: 58, right: 22, top: 24, bottom: 46 };
+      const chartW = width - margin.left - margin.right;
+      const chartH = height - margin.top - margin.bottom;
+      const max = Math.max(...rows.map(r => Number(r.value || 0)), 1);
+      ctx.strokeStyle = 'rgba(255,255,255,.12)';
+      for (let i=0;i<4;i++) { const y = margin.top + chartH * i / 3; ctx.beginPath(); ctx.moveTo(margin.left, y); ctx.lineTo(margin.left + chartW, y); ctx.stroke(); }
+      const points = rows.map((r, i) => ({ x: margin.left + (rows.length === 1 ? chartW/2 : chartW * i/(rows.length-1)), y: margin.top + chartH - (Number(r.value||0)/max)*chartH, ...r }));
+      ctx.strokeStyle = '#168bff'; ctx.lineWidth = 3; ctx.beginPath();
+      points.forEach((p, i) => i ? ctx.lineTo(p.x, p.y) : ctx.moveTo(p.x, p.y)); ctx.stroke();
+      points.forEach(p => { ctx.fillStyle = '#00a2ff'; ctx.beginPath(); ctx.arc(p.x, p.y, 4, 0, Math.PI*2); ctx.fill(); ctx.fillStyle='#dce9f7'; ctx.font='11px Arial'; ctx.textAlign='center'; ctx.fillText(money(p.value), p.x, Math.max(14, p.y - 9)); ctx.fillStyle='#a9bad0'; ctx.fillText(p.label, p.x, margin.top + chartH + 18); });
+    }
+
+    function drawDoughnutChart(canvasId, rows) {
+      const canvas = document.getElementById(canvasId);
+      if (!rows || !rows.length) return drawEmptyChart(canvas, 'Sem dados para rosca');
+      const data = resizeCanvas(canvas); if (!data) return;
+      const { ctx, width, height } = data;
+      clearChart(ctx, width, height);
+      const total = rows.reduce((s,r)=>s+Number(r.value||0),0) || 1;
+      const cx = width * .38, cy = height * .48, radius = Math.min(width, height) * .30;
+      const colors = ['#168bff', '#36d399', '#ffb020', '#ff4d6d', '#7c3aed'];
+      let start = -Math.PI/2;
+      rows.forEach((r,i)=>{ const angle = (Number(r.value||0)/total)*Math.PI*2; ctx.beginPath(); ctx.moveTo(cx,cy); ctx.arc(cx,cy,radius,start,start+angle); ctx.closePath(); ctx.fillStyle = colors[i % colors.length]; ctx.fill(); start += angle; });
+      ctx.globalCompositeOperation = 'destination-out'; ctx.beginPath(); ctx.arc(cx,cy,radius*.56,0,Math.PI*2); ctx.fill(); ctx.globalCompositeOperation='source-over';
+      ctx.fillStyle='#fff'; ctx.font='bold 16px Arial'; ctx.textAlign='center'; ctx.fillText(money(total), cx, cy+5);
+      ctx.textAlign='left'; ctx.font='13px Arial';
+      rows.forEach((r,i)=>{ const y=50+i*28; ctx.fillStyle=colors[i%colors.length]; ctx.fillRect(width*.68,y-10,12,12); ctx.fillStyle='#dce9f7'; ctx.fillText(`${r.label}: ${money(r.value)}`, width*.68+18,y); });
+    }
+
+    function renderDashboard() {
+      populateDashboardFilters();
+      const { receivables, services, quotes } = getDashboardFilteredData();
+      const activeReceivables = receivables.filter(r => (r.status || 'Pendente') !== 'Cancelado');
+      const received = activeReceivables.filter(r => (r.status || 'Pendente') === 'Recebido').reduce((s,r)=>s+Number(r.value||0),0);
+      const pending = activeReceivables.filter(r => getReceivableRealStatus(r) === 'Pendente').reduce((s,r)=>s+Number(r.value||0),0);
+      const overdue = activeReceivables.filter(r => getReceivableRealStatus(r) === 'Vencido').reduce((s,r)=>s+Number(r.value||0),0);
+      const forecast = pending + overdue;
+      const totalQuotes = quotes.reduce((s,q)=>s+Number(q.total||0),0);
+      const avgTicket = services.length ? services.reduce((s,x)=>s+Number(x.value||0),0)/services.length : 0;
+
+      const kpis = document.getElementById('dashboardKpis');
+      if (kpis) kpis.innerHTML = `
+        <div class="kpi-card"><span>Recebido</span><strong>${money(received)}</strong></div>
+        <div class="kpi-card"><span>A receber</span><strong>${money(forecast)}</strong></div>
+        <div class="kpi-card"><span>Vencido</span><strong>${money(overdue)}</strong></div>
+        <div class="kpi-card"><span>Ticket médio</span><strong>${money(avgTicket)}</strong></div>
+        <div class="kpi-card"><span>Orçamentos</span><strong>${quotes.length}</strong></div>
+        <div class="kpi-card"><span>Total orçado</span><strong>${money(totalQuotes)}</strong></div>
+        <div class="kpi-card"><span>Atendimentos</span><strong>${services.length}</strong></div>
+        <div class="kpi-card"><span>Parcelas</span><strong>${activeReceivables.length}</strong></div>`;
+
+      const monthly = groupSum(activeReceivables, r => monthKey(r.dueDate), r => r.value).filter(r=>r.label).sort((a,b)=>a.label.localeCompare(b.label)).slice(-12).map(r => ({ label: r.label.slice(5)+'/'+r.label.slice(2,4), value: r.value }));
+      const statusRows = groupSum(activeReceivables, r => getReceivableRealStatus(r), r => r.value).filter(r => r.value > 0);
+      const categoryMap = new Map();
+      quotes.forEach(q => (q.items || []).forEach(i => categoryMap.set(i.category || 'Sem categoria', (categoryMap.get(i.category || 'Sem categoria') || 0) + Number(i.value || 0))));
+      const categoryRows = Array.from(categoryMap, ([label, value]) => ({ label, value })).sort((a,b)=>b.value-a.value).slice(0,8);
+      const clientRows = groupSum(services, s => s.clientName || 'Sem cliente', s => s.value).sort((a,b)=>b.value-a.value).slice(0,8);
+
+      drawLineChart('chartMonthly', monthly);
+      drawDoughnutChart('chartStatus', statusRows);
+      drawBarChart('chartCategories', categoryRows, { money: true });
+      drawBarChart('chartClients', clientRows, { money: true });
+
+      const decisions = [];
+      if (overdue > 0) decisions.push(`<div class="decision-item"><strong>Atenção aos vencidos:</strong> existem ${money(overdue)} em parcelas vencidas. Priorize cobrança e follow-up com clientes.</div>`);
+      if (pending > received && pending > 0) decisions.push(`<div class="decision-item"><strong>Fluxo futuro forte:</strong> há ${money(pending)} a vencer. Acompanhe datas para reduzir atraso.</div>`);
+      if (!services.length) decisions.push(`<div class="decision-item"><strong>Sem atendimentos no filtro:</strong> ajuste mês, ano ou cliente para analisar outro período.</div>`);
+      if (clientRows[0]) decisions.push(`<div class="decision-item"><strong>Cliente destaque:</strong> ${escapeHTML(clientRows[0].label)} concentra ${money(clientRows[0].value)} em atendimentos no filtro.</div>`);
+      if (categoryRows[0]) decisions.push(`<div class="decision-item"><strong>Serviço mais relevante:</strong> ${escapeHTML(categoryRows[0].label)} lidera em valor orçado. Pode ser uma oportunidade comercial.</div>`);
+      document.getElementById('dashboardDecisions').innerHTML = decisions.join('') || '<div class="empty">Sem alertas para o filtro selecionado.</div>';
+    }
+
+    window.addEventListener('resize', () => {
+      if (document.getElementById('dashboard')?.classList.contains('active')) renderDashboard();
+    });
+
+    function refreshAll() { normalizeLists(); fillSelects(); renderClients(); renderConfigs(); renderQuotePreview(); renderQuotes(); renderServices(); renderReceivables(); renderDashboard(); }
     function escapeHTML(value) { return String(value ?? '').replace(/[&<>'"]/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[m])); }
     function escapeAttr(value) { return escapeHTML(value).replace(/`/g, '&#96;'); }
     refreshAll();
