@@ -649,11 +649,15 @@
       const clientId = document.getElementById('quoteClient').value;
       if (!clientId || quoteItems.length === 0) return;
       const existingQuote = state.quotes.find(q => q.id === id);
+      if (existingQuote?.approved) {
+        alert('Este orçamento já foi aprovado e possui atendimento lançado. Para editar, cancele primeiro o lançamento do atendimento.');
+        return;
+      }
       const client = state.clients.find(c => c.id === clientId) || {};
-      const quote = { id, handle, clientId, clientName: client.name || '', items: quoteItems, total: quoteItems.reduce((s,i)=>s+i.value,0), approved: existingQuote?.approved || false, createdAt: existingQuote?.createdAt || new Date().toISOString() };
+      const quote = { id, handle, clientId, clientName: client.name || '', items: quoteItems, total: quoteItems.reduce((s,i)=>s+i.value,0), approved: false, createdAt: existingQuote?.createdAt || new Date().toISOString() };
       const index = state.quotes.findIndex(q => q.id === id);
       if (index >= 0) state.quotes[index] = quote; else state.quotes.push(quote);
-      sendToSheet('Orcamentos', [quote.handle, new Date().toISOString().slice(0, 10), quote.clientId, quote.clientName, JSON.stringify(quote.items), quote.total, quote.approved ? 'Aprovado' : 'Pendente'], quote.handle);
+      sendToSheet('Orcamentos', [quote.handle, new Date().toISOString().slice(0, 10), quote.clientId, quote.clientName, JSON.stringify(quote.items), quote.total, 'Pendente'], quote.handle);
       if (isNew) state.quoteSequence += 1;
       saveState(); resetQuoteForm(); refreshAll();
     });
@@ -669,6 +673,10 @@
     }
     function editQuote(id) {
       const q = state.quotes.find(x => x.id === id); if (!q) return;
+      if (q.approved) {
+        alert('Este orçamento está aprovado e não pode ser editado. Cancele o atendimento lançado para liberar a edição.');
+        return;
+      }
       document.getElementById('quoteId').value = q.id;
       document.getElementById('quoteHandle').value = q.handle;
       document.getElementById('quoteClient').value = q.clientId;
@@ -696,7 +704,13 @@
         return q.handle.toLowerCase().includes(term) || (client?.name || '').toLowerCase().includes(term);
       });
       document.getElementById('quotesCount').textContent = state.quotes.length + ' orçamento' + (state.quotes.length === 1 ? '' : 's');
-      document.getElementById('quotesList').innerHTML = list.length ? `<table><thead><tr><th>Número</th><th>Cliente</th><th>Total</th><th>Status</th><th>Ações</th></tr></thead><tbody>${list.map(q => { const c = state.clients.find(x=>x.id===q.clientId); return `<tr><td><strong>${q.handle}</strong></td><td>${escapeHTML(c?.name || '')}</td><td>${money(q.total)}</td><td>${q.approved ? '<span class="badge">Aprovado</span>' : '<span class="badge">Em aberto</span>'}</td><td><button type="button" class="btn small secondary" onclick="editQuote('${q.id}')">Editar</button> <button type="button" class="btn small" onclick="generatePDF('${q.id}')">Gerar PDF</button> <button type="button" class="btn small" onclick="approveQuote('${q.id}')">Aprovado</button></td></tr>` }).join('')}</tbody></table>` : '<div class="empty">Nenhum orçamento salvo.</div>';
+      document.getElementById('quotesList').innerHTML = list.length ? `<table><thead><tr><th>Número</th><th>Cliente</th><th>Total</th><th>Status</th><th>Ações</th></tr></thead><tbody>${list.map(q => {
+        const c = state.clients.find(x=>x.id===q.clientId);
+        const actions = q.approved
+          ? `<button type="button" class="btn small" onclick="generatePDF('${q.id}')">Gerar PDF</button> <span class="badge">Edição bloqueada</span>`
+          : `<button type="button" class="btn small secondary" onclick="editQuote('${q.id}')">Editar</button> <button type="button" class="btn small" onclick="generatePDF('${q.id}')">Gerar PDF</button> <button type="button" class="btn small" onclick="approveQuote('${q.id}')">Aprovar</button>`;
+        return `<tr><td><strong>${q.handle}</strong></td><td>${escapeHTML(c?.name || '')}</td><td>${money(q.total)}</td><td>${q.approved ? '<span class="badge">Aprovado</span>' : '<span class="badge">Em aberto</span>'}</td><td>${actions}</td></tr>`
+      }).join('')}</tbody></table>` : '<div class="empty">Nenhum orçamento salvo.</div>';
     }
 
     function approveQuote(id) {
@@ -708,7 +722,7 @@
 
       sendToSheet('Orcamentos', [quote.handle, new Date().toISOString().slice(0, 10), quote.clientId, quote.clientName, JSON.stringify(quote.items), quote.total, 'Aprovado'], quote.handle);
 
-      if (!state.services.some(s => s.quoteId === quote.id)) {
+      if (!state.services.some(s => s.quoteId === quote.id && s.status !== 'Cancelado')) {
         const service = {
           id: uid(),
           quoteId: quote.id,
@@ -719,10 +733,11 @@
           value: quote.total,
           payment: '',
           deliveryDate: '',
-          notes: ''
+          notes: '',
+          status: 'Ativo'
         };
         state.services.push(service);
-        sendToSheet('Atendimentos', [service.id, service.date, service.handle, service.clientName, service.value, service.payment, service.deliveryDate, service.notes], service.id);
+        sendToSheet('Atendimentos', [service.id, service.date, service.handle, service.clientName, service.value, service.payment, service.deliveryDate, service.notes, service.status], service.id);
       }
       saveState();
       refreshAll();
@@ -744,12 +759,13 @@
 
 
     function approvedQuotesAvailable() {
-      const used = new Set(state.services.map(s => s.quoteId));
+      const used = new Set(state.services.filter(s => s.status !== 'Cancelado').map(s => s.quoteId));
       return state.quotes.filter(q => q.approved && !used.has(q.id));
     }
     function renderServices() {
-      document.getElementById('servicesCount').textContent = state.services.length + ' atendimento' + (state.services.length === 1 ? '' : 's');
-      document.getElementById('servicesList').innerHTML = state.services.length ? `<table><thead><tr><th>Data</th><th>Orçamento</th><th>Cliente</th><th>Valor</th><th>Ações</th></tr></thead><tbody>${state.services.slice().reverse().map(s=>`<tr><td>${escapeHTML(s.date || '')}</td><td><strong>${escapeHTML(s.handle || '')}</strong></td><td>${escapeHTML(s.clientName || '')}</td><td>${money(s.value)}</td><td><button type="button" class="btn small secondary" onclick="openServiceModal('${s.id}', event)">Editar</button></td></tr>`).join('')}</tbody></table>` : '<div class="empty">Nenhum atendimento lançado. Aprove um orçamento para ele aparecer nesta tela.</div>';
+      const activeServices = state.services.filter(s => s.status !== 'Cancelado');
+      document.getElementById('servicesCount').textContent = activeServices.length + ' atendimento' + (activeServices.length === 1 ? '' : 's');
+      document.getElementById('servicesList').innerHTML = activeServices.length ? `<table><thead><tr><th>Data</th><th>Orçamento</th><th>Cliente</th><th>Valor</th><th>Ações</th></tr></thead><tbody>${activeServices.slice().reverse().map(s=>`<tr><td>${escapeHTML(s.date || '')}</td><td><strong>${escapeHTML(s.handle || '')}</strong></td><td>${escapeHTML(s.clientName || '')}</td><td>${money(s.value)}</td><td><button type="button" class="btn small secondary" onclick="openServiceModal('${s.id}', event)">Editar</button> <button type="button" class="btn small danger" onclick="cancelService('${s.id}', event)">Cancelar lançamento</button></td></tr>`).join('')}</tbody></table>` : '<div class="empty">Nenhum atendimento lançado. Aprove um orçamento para ele aparecer nesta tela.</div>';
     }
 
     function unlockServiceModalFields() {
@@ -810,11 +826,43 @@
       service.deliveryDate = document.getElementById('serviceEditDelivery').value;
       service.notes = document.getElementById('serviceEditNotes').value.trim();
 
-      sendToSheet('Atendimentos', [service.id, service.date, service.handle, service.clientName, service.value, service.payment, service.deliveryDate, service.notes], service.id);
+      service.status = service.status || 'Ativo';
+      sendToSheet('Atendimentos', [service.id, service.date, service.handle, service.clientName, service.value, service.payment, service.deliveryDate, service.notes, service.status], service.id);
       saveState();
       closeServiceModal();
       refreshAll();
     });
+
+    function cancelService(id, event) {
+      if (event) {
+        event.preventDefault();
+        event.stopPropagation();
+      }
+
+      const serviceIndex = state.services.findIndex(s => s.id === id);
+      if (serviceIndex < 0) return;
+
+      const service = state.services[serviceIndex];
+      const ok = confirm(`Cancelar o lançamento do atendimento ${service.handle || ''}? O orçamento voltará para Em aberto e poderá ser editado.`);
+      if (!ok) return;
+
+      const quote = state.quotes.find(q => q.id === service.quoteId || q.handle === service.handle);
+      if (quote) {
+        quote.approved = false;
+        const client = state.clients.find(c => c.id === quote.clientId) || {};
+        quote.clientName = client.name || quote.clientName || '';
+        sendToSheet('Orcamentos', [quote.handle, new Date().toISOString().slice(0, 10), quote.clientId, quote.clientName, JSON.stringify(quote.items), quote.total, 'Pendente'], quote.handle);
+      }
+
+      service.status = 'Cancelado';
+      service.notes = service.notes ? `${service.notes} | Atendimento cancelado` : 'Atendimento cancelado';
+      sendToSheet('Atendimentos', [service.id, service.date, service.handle, service.clientName, service.value, service.payment, service.deliveryDate, service.notes, service.status], service.id);
+
+      state.services.splice(serviceIndex, 1);
+      saveState();
+      refreshAll();
+      openScreen('orcamentos');
+    }
 
     document.querySelector('#serviceModal .modal-card')?.addEventListener('click', e => {
       e.stopPropagation();
