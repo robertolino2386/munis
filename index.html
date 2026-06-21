@@ -290,6 +290,12 @@
         <div class="grid">
           <div class="card span-12">
             <div class="card-title"><h3>Recebimentos</h3><span class="badge" id="receivablesCount">0 recebimentos</span></div>
+            <input class="search" id="receivableSearch" placeholder="Pesquisar por orçamento ou cliente" oninput="renderReceivables()" />
+            <div class="actions" style="margin-bottom:14px;">
+              <button class="btn small secondary" type="button" onclick="setReceivablesFilter('todos')">Todos</button>
+              <button class="btn small danger" type="button" onclick="setReceivablesFilter('vencidos')">Vencidos</button>
+              <button class="btn small" type="button" onclick="setReceivablesFilter('avencer')">A vencer</button>
+            </div>
             <div id="receivablesList"></div>
           </div>
         </div>
@@ -380,6 +386,7 @@
 
     let state = loadState();
     let quoteItems = [];
+    let receivablesFilter = 'todos';
 
     function defaultState() {
       return {
@@ -831,7 +838,10 @@
         const receiptCell = s.receiptApproved
           ? '<span class="badge">Recebimento aprovado</span>'
           : `<button type="button" class="btn small" onclick="approveServiceReceipt('${s.id}', event)">Recebimento Aprovado</button>`;
-        return `<tr><td>${escapeHTML(s.date || '')}</td><td><strong>${escapeHTML(s.handle || '')}</strong></td><td>${escapeHTML(s.clientName || '')}</td><td>${money(s.value)}</td><td>${Number(s.installments || 1)}x</td><td>${receiptCell}</td><td><button type="button" class="btn small secondary" onclick="openServiceModal('${s.id}', event)">Editar</button> <button type="button" class="btn small danger" onclick="cancelService('${s.id}', event)">Cancelar lançamento</button></td></tr>`
+        const actions = s.receiptApproved
+          ? `<button type="button" class="btn small danger" onclick="cancelServiceReceipt('${s.id}', event)">Cancelar recebimento</button> <span class="badge">Edição bloqueada</span>`
+          : `<button type="button" class="btn small secondary" onclick="openServiceModal('${s.id}', event)">Editar</button> <button type="button" class="btn small danger" onclick="cancelService('${s.id}', event)">Cancelar lançamento</button>`;
+        return `<tr><td>${escapeHTML(s.date || '')}</td><td><strong>${escapeHTML(s.handle || '')}</strong></td><td>${escapeHTML(s.clientName || '')}</td><td>${money(s.value)}</td><td>${Number(s.installments || 1)}x</td><td>${receiptCell}</td><td>${actions}</td></tr>`
       }).join('')}</tbody></table>` : '<div class="empty">Nenhum atendimento lançado. Aprove um orçamento para ele aparecer nesta tela.</div>';
     }
 
@@ -883,17 +893,51 @@
       openScreen('recebimentos');
     }
 
+    function setReceivablesFilter(filter) {
+      receivablesFilter = filter || 'todos';
+      renderReceivables();
+    }
+
+    function isOverdue(dateText) {
+      if (!dateText) return false;
+      const today = new Date();
+      today.setHours(0, 0, 0, 0);
+      const due = new Date(dateText + 'T00:00:00');
+      return due < today;
+    }
+
     function renderReceivables() {
-      const list = Array.isArray(state.receivables) ? state.receivables.slice().sort((a, b) => String(a.dueDate || '').localeCompare(String(b.dueDate || ''))) : [];
+      const search = (document.getElementById('receivableSearch')?.value || '').trim().toLowerCase();
+      let list = Array.isArray(state.receivables)
+        ? state.receivables.filter(item => (item.status || 'Pendente') !== 'Cancelado')
+        : [];
+
+      if (search) {
+        list = list.filter(item =>
+          String(item.handle || '').toLowerCase().includes(search) ||
+          String(item.clientName || '').toLowerCase().includes(search) ||
+          String(item.reference || '').toLowerCase().includes(search)
+        );
+      }
+
+      if (receivablesFilter === 'vencidos') {
+        list = list.filter(item => isOverdue(item.dueDate));
+      } else if (receivablesFilter === 'avencer') {
+        list = list.filter(item => !isOverdue(item.dueDate));
+      }
+
+      list = list.slice().sort((a, b) => String(a.dueDate || '').localeCompare(String(b.dueDate || '')));
+
+      const allActive = Array.isArray(state.receivables) ? state.receivables.filter(item => (item.status || 'Pendente') !== 'Cancelado') : [];
       const count = document.getElementById('receivablesCount');
       const target = document.getElementById('receivablesList');
-      if (count) count.textContent = list.length + ' recebimento' + (list.length === 1 ? '' : 's');
+      if (count) count.textContent = allActive.length + ' recebimento' + (allActive.length === 1 ? '' : 's');
       if (!target) return;
 
       const total = list.reduce((sum, item) => sum + Number(item.value || 0), 0);
-      target.innerHTML = list.length ? `<div class="badge" style="margin-bottom:14px;display:inline-block;">Total previsto: ${money(total)}</div><table><thead><tr><th>Vencimento</th><th>Cliente</th><th>Referência</th><th>Parcela</th><th>Forma</th><th>Valor</th><th>Status</th></tr></thead><tbody>${list.map(item => `<tr><td>${escapeHTML(item.dueDate || '')}</td><td>${escapeHTML(item.clientName || '')}</td><td>${escapeHTML(item.handle || '')}</td><td>${item.installment}/${item.installments}</td><td>${escapeHTML(item.payment || '')}</td><td>${money(item.value)}</td><td><span class="badge">${escapeHTML(item.status || 'Pendente')}</span></td></tr>`).join('')}</tbody></table>` : '<div class="empty">Nenhum recebimento aprovado ainda.</div>';
+      const filterLabel = receivablesFilter === 'vencidos' ? 'Vencidos' : receivablesFilter === 'avencer' ? 'A vencer' : 'Todos';
+      target.innerHTML = list.length ? `<div class="badge" style="margin-bottom:14px;display:inline-block;">Filtro: ${filterLabel} | Total previsto: ${money(total)}</div><table><thead><tr><th>Vencimento</th><th>Cliente</th><th>Orçamento</th><th>Parcela</th><th>Forma</th><th>Valor</th><th>Status</th></tr></thead><tbody>${list.map(item => `<tr><td>${escapeHTML(item.dueDate || '')}</td><td>${escapeHTML(item.clientName || '')}</td><td>${escapeHTML(item.handle || '')}</td><td>${item.installment}/${item.installments}</td><td>${escapeHTML(item.payment || '')}</td><td>${money(item.value)}</td><td><span class="badge">${escapeHTML(item.status || 'Pendente')}</span></td></tr>`).join('')}</tbody></table>` : '<div class="empty">Nenhum recebimento encontrado para o filtro selecionado.</div>';
     }
-
 
     function unlockServiceModalFields() {
       ['serviceEditDate', 'serviceEditPayment', 'serviceEditInstallments', 'serviceEditDelivery', 'serviceEditNotes'].forEach(id => {
@@ -914,6 +958,10 @@
 
       const service = state.services.find(s => s.id === id);
       if (!service) return;
+      if (service.receiptApproved) {
+        alert('Este atendimento já teve o recebimento aprovado. Para editar, primeiro cancele o recebimento.');
+        return;
+      }
 
       fillSelects();
       unlockServiceModalFields();
@@ -948,6 +996,12 @@
       const id = document.getElementById('serviceEditId').value;
       const service = state.services.find(s => s.id === id);
       if (!service) return;
+      if (service.receiptApproved) {
+        alert('Este atendimento já teve o recebimento aprovado. Para editar, primeiro cancele o recebimento.');
+        closeServiceModal();
+        refreshAll();
+        return;
+      }
 
       service.date = document.getElementById('serviceEditDate').value;
       service.payment = document.getElementById('serviceEditPayment').value;
@@ -962,6 +1016,34 @@
       refreshAll();
     });
 
+    function cancelServiceReceipt(id, event) {
+      if (event) {
+        event.preventDefault();
+        event.stopPropagation();
+      }
+
+      const service = state.services.find(s => s.id === id);
+      if (!service || service.status === 'Cancelado') return;
+
+      const relatedReceivables = state.receivables.filter(r => r.serviceId === service.id && (r.status || 'Pendente') !== 'Cancelado');
+      const ok = confirm(`Cancelar o recebimento aprovado do atendimento ${service.handle || ''}? As parcelas serão removidas da lista de recebimentos e o atendimento voltará a ficar editável.`);
+      if (!ok) return;
+
+      relatedReceivables.forEach(r => {
+        r.status = 'Cancelado';
+        sendToSheet('Recebimentos', receivableSheetRow(r), r.id);
+      });
+
+      state.receivables = state.receivables.filter(r => r.serviceId !== service.id);
+      service.receiptApproved = false;
+      service.receiptApprovedDate = '';
+      sendToSheet('Atendimentos', serviceSheetRow(service), service.id);
+
+      saveState();
+      refreshAll();
+      openScreen('atendimentos');
+    }
+
     function cancelService(id, event) {
       if (event) {
         event.preventDefault();
@@ -972,6 +1054,10 @@
       if (serviceIndex < 0) return;
 
       const service = state.services[serviceIndex];
+      if (service.receiptApproved) {
+        alert('Este atendimento possui recebimento aprovado. Cancele o recebimento antes de cancelar o lançamento.');
+        return;
+      }
       const ok = confirm(`Cancelar o lançamento do atendimento ${service.handle || ''}? O orçamento voltará para Em aberto e poderá ser editado.`);
       if (!ok) return;
 
