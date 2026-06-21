@@ -401,14 +401,19 @@
     }
     function saveState() { localStorage.setItem(STORAGE, JSON.stringify(state)); }
 
-    function sendToSheet(aba, valores) {
+    function sendToSheet(aba, valores, chave = '') {
       if (!APPS_SCRIPT_URL) return;
       try {
         fetch(APPS_SCRIPT_URL, {
           method: 'POST',
           mode: 'no-cors',
           headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-          body: JSON.stringify({ aba, valores })
+          body: JSON.stringify({
+            acao: chave ? 'upsert' : 'append',
+            aba,
+            chave,
+            valores
+          })
         });
       } catch (error) {
         console.warn('Não foi possível enviar para o Google Sheets:', error);
@@ -457,7 +462,7 @@
       const index = state.clients.findIndex(c => c.id === id);
       if (index >= 0) state.clients[index] = client; else state.clients.push(client);
       saveState();
-      sendToSheet('Clientes', [client.id, client.name, client.doc, client.phone, client.address, client.notes, new Date().toLocaleString('pt-BR')]);
+      sendToSheet('Clientes', [client.id, client.name, client.doc, client.phone, client.address, client.notes, new Date().toLocaleString('pt-BR')], client.id);
       resetClientForm(); refreshAll();
     });
 
@@ -644,10 +649,11 @@
       const clientId = document.getElementById('quoteClient').value;
       if (!clientId || quoteItems.length === 0) return;
       const existingQuote = state.quotes.find(q => q.id === id);
-      const quote = { id, handle, clientId, items: quoteItems, total: quoteItems.reduce((s,i)=>s+i.value,0), approved: existingQuote?.approved || false, createdAt: existingQuote?.createdAt || new Date().toISOString() };
+      const client = state.clients.find(c => c.id === clientId) || {};
+      const quote = { id, handle, clientId, clientName: client.name || '', items: quoteItems, total: quoteItems.reduce((s,i)=>s+i.value,0), approved: existingQuote?.approved || false, createdAt: existingQuote?.createdAt || new Date().toISOString() };
       const index = state.quotes.findIndex(q => q.id === id);
       if (index >= 0) state.quotes[index] = quote; else state.quotes.push(quote);
-      sendToSheet('Orcamentos', [quote.handle, new Date().toISOString().slice(0, 10), quote.clientId, quote.clientName, JSON.stringify(quote.items), quote.total, quote.approved ? 'Aprovado' : 'Pendente']);
+      sendToSheet('Orcamentos', [quote.handle, new Date().toISOString().slice(0, 10), quote.clientId, quote.clientName, JSON.stringify(quote.items), quote.total, quote.approved ? 'Aprovado' : 'Pendente'], quote.handle);
       if (isNew) state.quoteSequence += 1;
       saveState(); resetQuoteForm(); refreshAll();
     });
@@ -697,17 +703,26 @@
       const quote = state.quotes.find(q => q.id === id);
       if (!quote) return;
       quote.approved = true;
+      const client = state.clients.find(c => c.id === quote.clientId) || {};
+      quote.clientName = client.name || quote.clientName || '';
+
+      sendToSheet('Orcamentos', [quote.handle, new Date().toISOString().slice(0, 10), quote.clientId, quote.clientName, JSON.stringify(quote.items), quote.total, 'Aprovado'], quote.handle);
+
       if (!state.services.some(s => s.quoteId === quote.id)) {
-        const client = state.clients.find(c => c.id === quote.clientId) || {};
-        state.services.push({
+        const service = {
           id: uid(),
           quoteId: quote.id,
           handle: quote.handle,
           clientId: quote.clientId,
-          clientName: client.name || '',
+          clientName: quote.clientName,
           date: new Date().toISOString().slice(0, 10),
-          value: quote.total
-        });
+          value: quote.total,
+          payment: '',
+          deliveryDate: '',
+          notes: ''
+        };
+        state.services.push(service);
+        sendToSheet('Atendimentos', [service.id, service.date, service.handle, service.clientName, service.value, service.payment, service.deliveryDate, service.notes], service.id);
       }
       saveState();
       refreshAll();
@@ -773,7 +788,7 @@
       service.deliveryDate = document.getElementById('serviceEditDelivery').value;
       service.notes = document.getElementById('serviceEditNotes').value.trim();
 
-      sendToSheet('Atendimentos', [service.id, service.date, service.handle, service.clientName, service.value, service.payment, service.deliveryDate, service.notes]);
+      sendToSheet('Atendimentos', [service.id, service.date, service.handle, service.clientName, service.value, service.payment, service.deliveryDate, service.notes], service.id);
       saveState();
       closeServiceModal();
       refreshAll();
