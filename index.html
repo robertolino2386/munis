@@ -223,11 +223,11 @@
         </div>
       </div>
       <nav>
-        <button class="nav-btn active" data-screen="clientes"><span class="nav-icon">👤</span>Clientes</button>
+        <button class="nav-btn" data-screen="clientes"><span class="nav-icon">👤</span>Clientes</button>
         <button class="nav-btn" data-screen="orcamentos"><span class="nav-icon">📄</span>Orçamentos</button>
         <button class="nav-btn" data-screen="atendimentos"><span class="nav-icon">🛠️</span>Atendimentos</button>
         <button class="nav-btn" data-screen="recebimentos"><span class="nav-icon">💰</span>Recebimentos</button>
-        <button class="nav-btn" data-screen="dashboard"><span class="nav-icon">📊</span>Dashboard</button>
+        <button class="nav-btn active" data-screen="dashboard"><span class="nav-icon">📊</span>Dashboard</button>
         <button class="nav-btn" data-screen="configuracoes"><span class="nav-icon">⚙️</span>Configurações</button>
       </nav>
     </aside>
@@ -235,12 +235,12 @@
     <main>
       <div class="topbar">
         <div>
-          <h2 id="pageTitle">Clientes</h2>
+          <h2 id="pageTitle">Dashboard</h2>
           <span>Sistema web de controle profissional</span>
         </div>
       </div>
 
-      <section id="clientes" class="screen active">
+      <section id="clientes" class="screen">
         <div class="grid">
           <div class="card span-12">
             <div class="card-title"><h3>Cadastro de cliente</h3><span class="badge" id="clientMode">Novo cadastro</span></div>
@@ -317,7 +317,7 @@
       </section>
 
 
-      <section id="dashboard" class="screen">
+      <section id="dashboard" class="screen active">
         <div class="grid">
           <div class="card span-12">
             <div class="card-title"><h3>Dashboard gerencial</h3><span class="badge">Análises e tomada de decisão</span></div>
@@ -526,11 +526,7 @@
 
     document.querySelectorAll('.nav-btn').forEach(btn => {
       btn.addEventListener('click', () => {
-        document.querySelectorAll('.nav-btn').forEach(b => b.classList.remove('active'));
-        document.querySelectorAll('.screen').forEach(s => s.classList.remove('active'));
-        btn.classList.add('active');
-        document.getElementById(btn.dataset.screen).classList.add('active');
-        document.getElementById('pageTitle').textContent = btn.textContent.trim();
+        openScreen(btn.dataset.screen, true);
         refreshAll();
       });
     });
@@ -980,11 +976,13 @@
       refreshAll();
       openScreen('atendimentos');
     }
-    function openScreen(screenId) {
-      document.querySelectorAll('.nav-btn').forEach(b => b.classList.toggle('active', b.dataset.screen === screenId));
-      document.querySelectorAll('.screen').forEach(s => s.classList.toggle('active', s.id === screenId));
-      document.getElementById('pageTitle').textContent = document.querySelector(`[data-screen="${screenId}"]`)?.textContent.trim() || '';
-      if (screenId === 'dashboard') setTimeout(renderDashboard, 50);
+    function openScreen(screenId, persist = true) {
+      const target = document.getElementById(screenId) ? screenId : 'dashboard';
+      document.querySelectorAll('.nav-btn').forEach(b => b.classList.toggle('active', b.dataset.screen === target));
+      document.querySelectorAll('.screen').forEach(s => s.classList.toggle('active', s.id === target));
+      document.getElementById('pageTitle').textContent = document.querySelector(`[data-screen="${target}"]`)?.textContent.trim() || 'Dashboard';
+      if (persist) sessionStorage.setItem('munisActiveScreen', target);
+      if (target === 'dashboard') setTimeout(renderDashboard, 50);
     }
     function generatePDF(id) {
       const q = state.quotes.find(x => x.id === id); if (!q) return;
@@ -1541,6 +1539,7 @@
     function escapeHTML(value) { return String(value ?? '').replace(/[&<>'"]/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[m])); }
     function escapeAttr(value) { return escapeHTML(value).replace(/`/g, '&#96;'); }
     refreshAll();
+    openScreen(sessionStorage.getItem('munisActiveScreen') || 'dashboard', false);
   </script>
 </body>
 </html>
