@@ -515,6 +515,193 @@
       }
     }
 
+
+    function parseBRNumber(value) {
+      if (typeof value === 'number') return value;
+      const text = String(value ?? '').trim();
+      if (!text) return 0;
+      const cleaned = text.replace(/R\$|\s/g, '');
+      if (cleaned.includes(',') && cleaned.includes('.')) return Number(cleaned.replace(/\./g, '').replace(',', '.')) || 0;
+      if (cleaned.includes(',')) return Number(cleaned.replace(',', '.')) || 0;
+      return Number(cleaned) || 0;
+    }
+
+    function isHeaderRow(row) {
+      const first = String(row?.[0] ?? '').toLowerCase();
+      return ['id', 'handle', 'categoria', 'formarecebimento', 'datarecebimento'].some(h => first.includes(h));
+    }
+
+    function cleanRows(rows) {
+      if (!Array.isArray(rows)) return [];
+      return rows.filter((row, index) => Array.isArray(row) && row.some(cell => String(cell ?? '').trim() !== '') && !(index === 0 && isHeaderRow(row)));
+    }
+
+    function extractHandleFromReference(reference) {
+      const text = String(reference || '');
+      const match = text.match(/(Orc-\d+)/i);
+      return match ? match[1] : text.split(' - Parcela')[0] || '';
+    }
+
+    function extractInstallmentFromReference(reference) {
+      const text = String(reference || '');
+      const match = text.match(/Parcela\s+(\d+)\/(\d+)/i);
+      return {
+        installment: match ? Number(match[1]) : 1,
+        installments: match ? Number(match[2]) : 1
+      };
+    }
+
+    function uniqueByText(items) {
+      const seen = new Set();
+      return items.map(v => String(v || '').trim()).filter(v => {
+        const key = v.toLowerCase();
+        if (!v || seen.has(key)) return false;
+        seen.add(key);
+        return true;
+      });
+    }
+
+    function applySheetData(data) {
+      if (!data || typeof data !== 'object') return false;
+
+      const defaults = defaultState();
+      const clientRows = cleanRows(data.Clientes);
+      const categoryRows = cleanRows(data.Categorias);
+      const paymentRows = cleanRows(data.FormasRecebimento);
+      const quoteRows = cleanRows(data.Orcamentos);
+      const serviceRows = cleanRows(data.Atendimentos);
+      const receivableRows = cleanRows(data.Recebimentos);
+
+      const clients = clientRows.map(row => ({
+        id: String(row[0] || uid()),
+        name: String(row[1] || ''),
+        doc: String(row[2] || ''),
+        phone: String(row[3] || ''),
+        address: String(row[4] || ''),
+        notes: String(row[5] || '')
+      })).filter(c => c.name || c.id);
+
+      const categoriesFromSheet = categoryRows.map(row => row[1] || row[0]);
+      const paymentsFromSheet = paymentRows.map(row => row[1] || row[0]);
+
+      const quotes = quoteRows.map(row => {
+        let items = [];
+        try { items = JSON.parse(row[4] || '[]'); } catch (error) { items = []; }
+        const handle = String(row[0] || '');
+        const status = String(row[6] || 'Pendente');
+        return {
+          id: handle || uid(),
+          handle,
+          clientId: String(row[2] || ''),
+          clientName: String(row[3] || ''),
+          items: Array.isArray(items) ? items : [],
+          total: parseBRNumber(row[5]),
+          approved: status.toLowerCase() === 'aprovado',
+          createdAt: row[1] ? new Date(row[1]).toISOString?.() || String(row[1]) : new Date().toISOString()
+        };
+      }).filter(q => q.handle);
+
+      const findClientId = (name) => (clients.find(c => String(c.name).toLowerCase() === String(name || '').toLowerCase()) || {}).id || '';
+      const findQuoteId = (handle) => (quotes.find(q => q.handle === handle) || {}).id || '';
+
+      const services = serviceRows.map(row => {
+        const handle = String(row[2] || '');
+        const clientName = String(row[3] || '');
+        return {
+          id: String(row[0] || uid()),
+          date: String(row[1] || ''),
+          handle,
+          clientName,
+          clientId: findClientId(clientName),
+          quoteId: findQuoteId(handle),
+          value: parseBRNumber(row[4]),
+          payment: String(row[5] || ''),
+          deliveryDate: String(row[6] || ''),
+          notes: String(row[7] || ''),
+          status: String(row[8] || 'Ativo'),
+          installments: Number(row[9] || 1),
+          receiptApproved: String(row[10] || '').toLowerCase() === 'sim',
+          receiptApprovedDate: ''
+        };
+      }).filter(s => s.id && s.status !== 'Cancelado');
+
+      const findServiceId = (handle) => (services.find(s => s.handle === handle) || {}).id || '';
+      const findQuoteFromHandle = (handle) => quotes.find(q => q.handle === handle) || {};
+
+      const receivables = receivableRows.map(row => {
+        const reference = String(row[3] || '');
+        const handle = extractHandleFromReference(reference);
+        const installmentInfo = extractInstallmentFromReference(reference);
+        const quote = findQuoteFromHandle(handle);
+        return {
+          id: String(row[0] || uid()),
+          dueDate: String(row[1] || ''),
+          clientName: String(row[2] || ''),
+          reference,
+          value: parseBRNumber(row[4]),
+          payment: String(row[5] || ''),
+          status: String(row[6] || 'Pendente'),
+          receivedDate: String(row[7] || ''),
+          handle,
+          serviceId: findServiceId(handle),
+          quoteId: quote.id || '',
+          installment: installmentInfo.installment,
+          installments: installmentInfo.installments
+        };
+      }).filter(r => r.id && r.status !== 'Cancelado');
+
+      const maxSequence = quotes.reduce((max, q) => {
+        const n = Number(String(q.handle || '').replace(/\D/g, ''));
+        return Number.isFinite(n) && n > max ? n : max;
+      }, 0) + 1;
+
+      const hasSheetData = clientRows.length || categoryRows.length || paymentRows.length || quoteRows.length || serviceRows.length || receivableRows.length;
+      if (!hasSheetData) return false;
+
+      state = {
+        ...defaults,
+        clients,
+        categories: uniqueByText([...defaults.categories, ...categoriesFromSheet]),
+        payments: uniqueByText([...defaults.payments, ...paymentsFromSheet]),
+        quotes,
+        services,
+        receivables,
+        quoteSequence: Math.max(1, maxSequence)
+      };
+
+      saveState();
+      return true;
+    }
+
+    function loadDataFromSheets() {
+      if (!APPS_SCRIPT_URL) return Promise.resolve(false);
+
+      return new Promise(resolve => {
+        const callbackName = 'munisLoadSheets_' + Date.now();
+        const script = document.createElement('script');
+        let finished = false;
+
+        function done(ok) {
+          if (finished) return;
+          finished = true;
+          try { delete window[callbackName]; } catch (error) { window[callbackName] = undefined; }
+          if (script.parentNode) script.parentNode.removeChild(script);
+          resolve(ok);
+        }
+
+        window[callbackName] = payload => {
+          const ok = applySheetData(payload && payload.dados ? payload.dados : payload);
+          if (ok) refreshAll();
+          done(ok);
+        };
+
+        script.onerror = () => done(false);
+        script.src = APPS_SCRIPT_URL + '?acao=listar&callback=' + encodeURIComponent(callbackName) + '&t=' + Date.now();
+        document.body.appendChild(script);
+        setTimeout(() => done(false), 12000);
+      });
+    }
+
     function normalizeLists() {
       if (!Array.isArray(state.categories)) state.categories = [];
       if (!Array.isArray(state.payments)) state.payments = [];
@@ -1538,8 +1725,14 @@
     function refreshAll() { normalizeLists(); fillSelects(); renderClients(); renderConfigs(); renderQuotePreview(); renderQuotes(); renderServices(); renderReceivables(); renderDashboard(); }
     function escapeHTML(value) { return String(value ?? '').replace(/[&<>'"]/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[m])); }
     function escapeAttr(value) { return escapeHTML(value).replace(/`/g, '&#96;'); }
-    refreshAll();
-    openScreen(sessionStorage.getItem('munisActiveScreen') || 'dashboard', false);
+    function initApp() {
+      refreshAll();
+      openScreen(sessionStorage.getItem('munisActiveScreen') || 'dashboard', false);
+      loadDataFromSheets().then(() => {
+        openScreen(sessionStorage.getItem('munisActiveScreen') || 'dashboard', false);
+      });
+    }
+    initApp();
   </script>
 </body>
 </html>
