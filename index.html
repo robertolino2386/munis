@@ -273,6 +273,7 @@
               <div class="form-grid">
                 <div class="field"><label>Cliente</label><select id="quoteClient" required></select></div>
                 <div class="field"><label>Número do orçamento</label><input id="quoteHandle" readonly /></div>
+                <div class="field"><label>Prazo de Garantia</label><select id="quoteWarranty"></select></div>
                 <div class="field"><label>Categoria/Serviço</label><select id="quoteCategory"></select></div>
                 <div class="field"><label>Valor do serviço</label><input id="quoteValue" type="number" min="0" step="0.01" placeholder="0,00" /></div>
               </div>
@@ -360,7 +361,7 @@
 
       <section id="configuracoes" class="screen">
         <div class="grid">
-          <div class="card span-6">
+          <div class="card span-4">
             <div class="card-title"><h3>Categorias</h3><span class="badge">Serviços do orçamento</span></div>
             <form id="categoryForm">
               <label>Nova categoria</label>
@@ -373,7 +374,7 @@
             <br><div id="categoriesList"></div>
           </div>
 
-          <div class="card span-6">
+          <div class="card span-4">
             <div class="card-title"><h3>Formas de recebimento</h3><span class="badge">Pagamentos do atendimento</span></div>
             <form id="paymentForm">
               <label>Nova forma de recebimento</label>
@@ -384,6 +385,19 @@
               <p id="paymentMessage" style="display:none;color:var(--success);font-size:12px;margin-top:4px;font-weight:700;"></p>
             </form>
             <br><div id="paymentsList"></div>
+          </div>
+
+          <div class="card span-4">
+            <div class="card-title"><h3>Garantias</h3><span class="badge">Prazos do orçamento</span></div>
+            <form id="warrantyForm">
+              <label>Novo prazo de garantia</label>
+              <input id="newWarranty" placeholder="Ex.: 30 dias, 90 dias, Sem garantia" autocomplete="off" />
+              <div class="actions">
+                <button class="btn" type="button" onclick="addWarranty()">Salvar garantia</button>
+              </div>
+              <p id="warrantyMessage" style="display:none;color:var(--success);font-size:12px;margin-top:4px;font-weight:700;"></p>
+            </form>
+            <br><div id="warrantiesList"></div>
           </div>
         </div>
       </section>
@@ -454,6 +468,21 @@
     const APPS_SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbyTwqNH7o0Mi_m2ry9Sh6b9lqSANJhDu4zRRUh60Uc5gJw6bejO_Ts8NJa0wttzLT_a8A/exec';
     const money = value => Number(value || 0).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
     const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+    function formatDateBR(value) {
+      if (!value) return '';
+      const text = String(value);
+      const iso = text.match(/^(\d{4})-(\d{2})-(\d{2})/);
+      if (iso) return `${iso[3]}/${iso[2]}/${iso[1]}`;
+      const d = new Date(text);
+      if (!isNaN(d)) return d.toLocaleDateString('pt-BR');
+      return text;
+    }
+    function printWindowWhenReady(win) {
+      if (!win) return;
+      try {
+        win.onload = () => setTimeout(() => win.print(), 350);
+      } catch (error) {}
+    }
 
     let state = loadState();
     let quoteItems = [];
@@ -464,6 +493,7 @@
         clients: [],
         categories: ['Manutenção de computador', 'Formatação', 'Limpeza técnica', 'Troca de peça', 'Instalação de software'],
         payments: ['Pix', 'Dinheiro', 'Cartão de crédito', 'Cartão de débito'],
+        warranties: ['Sem garantia', '30 dias', '60 dias', '90 dias'],
         quotes: [],
         services: [],
         receivables: [],
@@ -485,6 +515,7 @@
           clients: Array.isArray(parsed.clients) ? parsed.clients : [],
           categories: Array.isArray(parsed.categories) ? parsed.categories : defaults.categories,
           payments: Array.isArray(parsed.payments) ? parsed.payments : defaults.payments,
+          warranties: Array.isArray(parsed.warranties) ? parsed.warranties : defaults.warranties,
           quotes: Array.isArray(parsed.quotes) ? parsed.quotes : [],
           services: Array.isArray(parsed.services) ? parsed.services : [],
           receivables: Array.isArray(parsed.receivables) ? parsed.receivables : [],
@@ -528,7 +559,7 @@
 
     function isHeaderRow(row) {
       const first = String(row?.[0] ?? '').toLowerCase();
-      return ['id', 'handle', 'categoria', 'formarecebimento', 'datarecebimento'].some(h => first.includes(h));
+      return ['id', 'handle', 'categoria', 'formarecebimento', 'garantia', 'datarecebimento'].some(h => first.includes(h));
     }
 
     function cleanRows(rows) {
@@ -568,6 +599,7 @@
       const clientRows = cleanRows(data.Clientes);
       const categoryRows = cleanRows(data.Categorias);
       const paymentRows = cleanRows(data.FormasRecebimento);
+      const warrantyRows = cleanRows(data.Garantias);
       const quoteRows = cleanRows(data.Orcamentos);
       const serviceRows = cleanRows(data.Atendimentos);
       const receivableRows = cleanRows(data.Recebimentos);
@@ -583,12 +615,14 @@
 
       const categoriesFromSheet = categoryRows.map(row => row[1] || row[0]);
       const paymentsFromSheet = paymentRows.map(row => row[1] || row[0]);
+      const warrantiesFromSheet = warrantyRows.map(row => row[1] || row[0]);
 
       const quotes = quoteRows.map(row => {
         let items = [];
         try { items = JSON.parse(row[4] || '[]'); } catch (error) { items = []; }
         const handle = String(row[0] || '');
         const status = String(row[6] || 'Pendente');
+        const warranty = String(row[7] || '');
         return {
           id: handle || uid(),
           handle,
@@ -596,6 +630,8 @@
           clientName: String(row[3] || ''),
           items: Array.isArray(items) ? items : [],
           total: parseBRNumber(row[5]),
+          warranty,
+          status,
           approved: status.toLowerCase() === 'aprovado',
           createdAt: row[1] ? new Date(row[1]).toISOString?.() || String(row[1]) : new Date().toISOString()
         };
@@ -614,6 +650,7 @@
           clientName,
           clientId: findClientId(clientName),
           quoteId: findQuoteId(handle),
+          warranty: (findQuoteFromHandle(handle) || {}).warranty || '',
           value: parseBRNumber(row[4]),
           payment: String(row[5] || ''),
           deliveryDate: String(row[6] || ''),
@@ -655,7 +692,7 @@
         return Number.isFinite(n) && n > max ? n : max;
       }, 0) + 1;
 
-      const hasSheetData = clientRows.length || categoryRows.length || paymentRows.length || quoteRows.length || serviceRows.length || receivableRows.length;
+      const hasSheetData = clientRows.length || categoryRows.length || paymentRows.length || warrantyRows.length || quoteRows.length || serviceRows.length || receivableRows.length;
       if (!hasSheetData) return false;
 
       state = {
@@ -663,6 +700,7 @@
         clients,
         categories: uniqueByText([...defaults.categories, ...categoriesFromSheet]),
         payments: uniqueByText([...defaults.payments, ...paymentsFromSheet]),
+        warranties: uniqueByText([...defaults.warranties, ...warrantiesFromSheet]),
         quotes,
         services,
         receivables,
@@ -705,6 +743,7 @@
     function normalizeLists() {
       if (!Array.isArray(state.categories)) state.categories = [];
       if (!Array.isArray(state.payments)) state.payments = [];
+      if (!Array.isArray(state.warranties)) state.warranties = [];
       if (!Array.isArray(state.clients)) state.clients = [];
       if (!Array.isArray(state.quotes)) state.quotes = [];
       if (!Array.isArray(state.services)) state.services = [];
@@ -813,16 +852,16 @@
       const quoteRows = quotes.slice().reverse().map(q => {
         const service = services.find(s => String(s.handle || '') === String(q.handle || ''));
         const rec = receivableSummaryByHandle(q.handle);
-        const quoteStatus = q.status || 'Em aberto';
+        const quoteStatus = q.status || (q.approved ? 'Aprovado' : 'Em aberto');
         const serviceStatus = service
           ? (service.receiptApproved ? 'Recebimento aprovado' : 'Atendimento lançado')
           : 'Sem atendimento';
         const detailRows = rec.items.length
-          ? `<div style="margin-top:8px;font-size:12px;color:var(--muted);">${rec.items.map(r => `${escapeHTML(String(r.installment || ''))}/${escapeHTML(String(r.installments || ''))} - ${escapeHTML(r.dueDate || '')} - ${money(r.value)} - ${escapeHTML(r.status || 'Pendente')}`).join('<br>')}</div>`
+          ? `<div style="margin-top:8px;font-size:12px;color:var(--muted);">${rec.items.map(r => `${escapeHTML(String(r.installment || ''))}/${escapeHTML(String(r.installments || ''))} - ${escapeHTML(formatDateBR(r.dueDate || ''))} - ${money(r.value)} - ${escapeHTML(r.status || 'Pendente')}`).join('<br>')}</div>`
           : '';
         return `<tr>
           <td>${escapeHTML(q.handle || '')}</td>
-          <td>${escapeHTML(q.date || '')}</td>
+          <td>${escapeHTML(formatDateBR(q.date || q.createdAt || ''))}</td>
           <td>${money(q.total || 0)}</td>
           <td><span class="badge">${escapeHTML(quoteStatus)}</span></td>
           <td><span class="badge">${escapeHTML(serviceStatus)}</span></td>
@@ -866,7 +905,7 @@
 
     function renderClients() {
       const term = document.getElementById('clientSearch').value.toLowerCase();
-      const list = state.clients.filter(c => c.name.toLowerCase().includes(term));
+      const list = state.clients.slice().sort((a,b)=>String(a.name||'').localeCompare(String(b.name||''),'pt-BR')).filter(c => c.name.toLowerCase().includes(term));
       document.getElementById('clientsCount').textContent = state.clients.length + ' cliente' + (state.clients.length === 1 ? '' : 's');
       document.getElementById('clientsList').innerHTML = list.length ? `
         <table><thead><tr><th>Nome</th><th>CNPJ/CPF</th><th>Telefone</th><th>Endereço</th><th>Ações</th></tr></thead><tbody>
@@ -941,6 +980,36 @@
       input.focus();
     }
 
+
+    function addWarranty() {
+      normalizeLists();
+
+      const input = document.getElementById('newWarranty');
+      if (!input) return;
+
+      const value = input.value.trim();
+      if (!value) {
+        showConfigMessage('warrantyMessage', 'Digite um prazo de garantia para salvar.', true);
+        input.focus();
+        return;
+      }
+
+      const exists = state.warranties.some(item => String(item).toLowerCase() === value.toLowerCase());
+      if (exists) {
+        showConfigMessage('warrantyMessage', 'Esse prazo de garantia já está cadastrado.', true);
+        input.focus();
+        return;
+      }
+
+      state.warranties.push(value);
+      saveState();
+      sendToSheet('Garantias', [uid(), value]);
+      input.value = '';
+      refreshAll();
+      showConfigMessage('warrantyMessage', 'Garantia cadastrada com sucesso.');
+      input.focus();
+    }
+
     const categoryForm = document.getElementById('categoryForm');
     if (categoryForm) {
       categoryForm.addEventListener('submit', e => {
@@ -957,6 +1026,14 @@
       });
     }
 
+    const warrantyForm = document.getElementById('warrantyForm');
+    if (warrantyForm) {
+      warrantyForm.addEventListener('submit', e => {
+        e.preventDefault();
+        addWarranty();
+      });
+    }
+
     function removeCategory(index) {
       normalizeLists();
       state.categories.splice(index, 1);
@@ -969,13 +1046,21 @@
       saveState();
       refreshAll();
     }
+    function removeWarranty(index) {
+      normalizeLists();
+      state.warranties.splice(index, 1);
+      saveState();
+      refreshAll();
+    }
     function renderConfigs() {
       normalizeLists();
       const categoriesList = document.getElementById('categoriesList');
       const paymentsList = document.getElementById('paymentsList');
+      const warrantiesList = document.getElementById('warrantiesList');
 
       if (categoriesList) categoriesList.innerHTML = renderSimpleTable(state.categories, 'Categoria', 'removeCategory');
       if (paymentsList) paymentsList.innerHTML = renderSimpleTable(state.payments, 'Forma de recebimento', 'removePayment');
+      if (warrantiesList) warrantiesList.innerHTML = renderSimpleTable(state.warranties, 'Garantia', 'removeWarranty');
     }
     function renderSimpleTable(items, title, fn) {
       return items.length ? `<table><thead><tr><th>${title}</th><th>Ações</th></tr></thead><tbody>${items.map((x,i)=>`<tr><td>${escapeHTML(x)}</td><td><button type="button" class="btn small danger" onclick="${fn}(${i})">Remover</button></td></tr>`).join('')}</tbody></table>` : '<div class="empty">Nenhum item cadastrado.</div>';
@@ -984,14 +1069,19 @@
     function fillSelects() {
       normalizeLists();
 
-      const categoryOptions = state.categories.map(c => `<option value="${escapeAttr(c)}">${escapeHTML(c)}</option>`).join('');
-      const clientOptions = '<option value="">Selecione o cliente</option>' + state.clients.map(c => `<option value="${c.id}">${escapeHTML(c.name)}</option>`).join('');
+      const categoryOptions = state.categories.slice().sort((a,b)=>String(a).localeCompare(String(b),'pt-BR')).map(c => `<option value="${escapeAttr(c)}">${escapeHTML(c)}</option>`).join('');
+      const sortedClients = state.clients.slice().sort((a,b)=>String(a.name||'').localeCompare(String(b.name||''),'pt-BR'));
+      const clientOptions = '<option value="">Selecione o cliente</option>' + sortedClients.map(c => `<option value="${c.id}">${escapeHTML(c.name)}</option>`).join('');
+      const warrantyOptions = '<option value="">Selecione a garantia</option>' + state.warranties.slice().sort((a,b)=>String(a).localeCompare(String(b),'pt-BR')).map(w => `<option value="${escapeAttr(w)}">${escapeHTML(w)}</option>`).join('');
 
       const quoteCategory = document.getElementById('quoteCategory');
       if (quoteCategory) quoteCategory.innerHTML = categoryOptions || '<option value="">Cadastre uma categoria em Configurações</option>';
 
       const quoteClient = document.getElementById('quoteClient');
       if (quoteClient) quoteClient.innerHTML = clientOptions;
+
+      const quoteWarranty = document.getElementById('quoteWarranty');
+      if (quoteWarranty) quoteWarranty.innerHTML = warrantyOptions || '<option value="">Cadastre uma garantia em Configurações</option>';
 
       const paymentOptions = '<option value="">Selecione a forma de recebimento</option>' +
         state.payments.map(p => `<option value="${escapeAttr(p)}">${escapeHTML(p)}</option>`).join('');
@@ -1024,15 +1114,20 @@
       const clientId = document.getElementById('quoteClient').value;
       if (!clientId || quoteItems.length === 0) return;
       const existingQuote = state.quotes.find(q => q.id === id);
+      const warranty = document.getElementById('quoteWarranty')?.value || '';
+      if (existingQuote?.status === 'Cancelado') {
+        alert('Este orçamento foi cancelado. Crie um novo orçamento para este cliente.');
+        return;
+      }
       if (existingQuote?.approved) {
         alert('Este orçamento já foi aprovado e possui atendimento lançado. Para editar, cancele primeiro o lançamento do atendimento.');
         return;
       }
       const client = state.clients.find(c => c.id === clientId) || {};
-      const quote = { id, handle, clientId, clientName: client.name || '', items: quoteItems, total: quoteItems.reduce((s,i)=>s+i.value,0), approved: false, createdAt: existingQuote?.createdAt || new Date().toISOString() };
+      const quote = { id, handle, clientId, clientName: client.name || '', items: quoteItems, total: quoteItems.reduce((s,i)=>s+i.value,0), warranty, status: 'Pendente', approved: false, createdAt: existingQuote?.createdAt || new Date().toISOString() };
       const index = state.quotes.findIndex(q => q.id === id);
       if (index >= 0) state.quotes[index] = quote; else state.quotes.push(quote);
-      sendToSheet('Orcamentos', [quote.handle, new Date().toISOString().slice(0, 10), quote.clientId, quote.clientName, JSON.stringify(quote.items), quote.total, 'Pendente'], quote.handle);
+      sendToSheet('Orcamentos', quoteSheetRow(quote, 'Pendente'), quote.handle);
       if (isNew) state.quoteSequence += 1;
       saveState(); resetQuoteForm(); refreshAll();
     });
@@ -1044,10 +1139,16 @@
       quoteItems = [];
       fillSelects();
       document.getElementById('quoteClient').value = '';
+      const warrantySelect = document.getElementById('quoteWarranty');
+      if (warrantySelect) warrantySelect.value = '';
       renderQuotePreview();
     }
     function editQuote(id) {
       const q = state.quotes.find(x => x.id === id); if (!q) return;
+      if (q.status === 'Cancelado') {
+        alert('Este orçamento foi cancelado e não pode ser editado.');
+        return;
+      }
       if (q.approved) {
         alert('Este orçamento está aprovado e não pode ser editado. Cancele o atendimento lançado para liberar a edição.');
         return;
@@ -1055,6 +1156,8 @@
       document.getElementById('quoteId').value = q.id;
       document.getElementById('quoteHandle').value = q.handle;
       document.getElementById('quoteClient').value = q.clientId;
+      const warrantySelect = document.getElementById('quoteWarranty');
+      if (warrantySelect) warrantySelect.value = q.warranty || '';
       document.getElementById('quoteMode').textContent = 'Editando orçamento';
       quoteItems = JSON.parse(JSON.stringify(q.items));
       renderQuotePreview(); window.scrollTo({ top: 0, behavior: 'smooth' });
@@ -1062,15 +1165,18 @@
     function renderQuotePreview() {
       const handle = document.getElementById('quoteHandle').value || nextQuoteHandle();
       const client = state.clients.find(c => c.id === document.getElementById('quoteClient').value);
+      const warranty = document.getElementById('quoteWarranty')?.value || '';
       const total = quoteItems.reduce((s,i)=>s+i.value,0);
       document.getElementById('quoteItemsCount').textContent = quoteItems.length + ' ite' + (quoteItems.length === 1 ? 'm' : 'ns');
       document.getElementById('quotePreview').innerHTML = `
         <h3>${handle}</h3>
         <p class="muted-dark">Cliente: <strong>${escapeHTML(client?.name || 'Selecione um cliente')}</strong></p>
+        <p class="muted-dark">Garantia: <strong>${escapeHTML(warranty || 'Selecione a garantia')}</strong></p>
         <div class="quote-items">${quoteItems.length ? quoteItems.map((i, index) => `<div class="quote-item"><span>${escapeHTML(i.category)}<br><button type="button" class="btn small danger" onclick="removeQuoteItem(${index})" style="margin-top:6px">Remover</button></span><strong>${money(i.value)}</strong></div>`).join('') : '<p class="muted-dark" style="padding:14px 0">Adicione categorias para formar o orçamento.</p>'}</div>
         <div class="quote-total"><span>Total</span><span>${money(total)}</span></div>`;
     }
     document.getElementById('quoteClient').addEventListener('change', renderQuotePreview);
+    document.getElementById('quoteWarranty')?.addEventListener('change', renderQuotePreview);
 
     function renderQuotes() {
       const term = document.getElementById('quoteSearch').value.toLowerCase();
@@ -1081,13 +1187,32 @@
       document.getElementById('quotesCount').textContent = state.quotes.length + ' orçamento' + (state.quotes.length === 1 ? '' : 's');
       document.getElementById('quotesList').innerHTML = list.length ? `<table><thead><tr><th>Número</th><th>Cliente</th><th>Total</th><th>Status</th><th>Ações</th></tr></thead><tbody>${list.map(q => {
         const c = state.clients.find(x=>x.id===q.clientId);
-        const actions = q.approved
-          ? `<button type="button" class="btn small" onclick="generatePDF('${q.id}')">Gerar PDF</button> <span class="badge">Edição bloqueada</span>`
-          : `<button type="button" class="btn small secondary" onclick="editQuote('${q.id}')">Editar</button> <button type="button" class="btn small" onclick="generatePDF('${q.id}')">Gerar PDF</button> <button type="button" class="btn small" onclick="approveQuote('${q.id}')">Aprovar</button>`;
-        return `<tr><td><strong>${q.handle}</strong></td><td>${escapeHTML(c?.name || '')}</td><td>${money(q.total)}</td><td>${q.approved ? '<span class="badge">Aprovado</span>' : '<span class="badge">Em aberto</span>'}</td><td>${actions}</td></tr>`
+        const isCanceled = (q.status || '').toLowerCase() === 'cancelado';
+        const actions = isCanceled
+          ? `<button type="button" class="btn small" onclick="generatePDF('${q.id}')">Gerar PDF</button> <span class="badge">Cancelado</span>`
+          : q.approved
+            ? `<button type="button" class="btn small" onclick="generatePDF('${q.id}')">Gerar PDF</button> <span class="badge">Edição bloqueada</span>`
+            : `<button type="button" class="btn small secondary" onclick="editQuote('${q.id}')">Editar</button> <button type="button" class="btn small" onclick="generatePDF('${q.id}')">Gerar PDF</button> <button type="button" class="btn small" onclick="approveQuote('${q.id}')">Aprovar</button> <button type="button" class="btn small danger" onclick="cancelQuote('${q.id}', event)">Cancelar</button>`;
+        const statusLabel = isCanceled ? 'Cancelado' : q.approved ? 'Aprovado' : 'Em aberto';
+        return `<tr><td><strong>${q.handle}</strong></td><td>${escapeHTML(c?.name || '')}</td><td>${money(q.total)}</td><td><span class="badge">${statusLabel}</span></td><td>${actions}</td></tr>`
       }).join('')}</tbody></table>` : '<div class="empty">Nenhum orçamento salvo.</div>';
     }
 
+
+
+    function quoteSheetRow(quote, status = '') {
+      const finalStatus = status || quote.status || (quote.approved ? 'Aprovado' : 'Pendente');
+      return [
+        quote.handle || '',
+        (quote.createdAt || new Date().toISOString()).slice(0, 10),
+        quote.clientId || '',
+        quote.clientName || '',
+        JSON.stringify(quote.items || []),
+        quote.total || 0,
+        finalStatus,
+        quote.warranty || ''
+      ];
+    }
 
     function serviceSheetRow(service) {
       return [
@@ -1131,14 +1256,39 @@
       return Array.from({ length: parts }, (_, index) => (base + (index < remainder ? 1 : 0)) / 100);
     }
 
+
+    function cancelQuote(id, event) {
+      if (event) {
+        event.preventDefault();
+        event.stopPropagation();
+      }
+      const quote = state.quotes.find(q => q.id === id);
+      if (!quote) return;
+      if ((quote.status || '').toLowerCase() === 'cancelado') {
+        alert('Este orçamento está cancelado e não pode ser aprovado.');
+        return;
+      }
+      if (quote.approved) {
+        alert('Orçamento aprovado não pode ser cancelado aqui. Cancele primeiro o atendimento lançado.');
+        return;
+      }
+      if (!confirm('Deseja cancelar este orçamento?')) return;
+      quote.status = 'Cancelado';
+      quote.approved = false;
+      sendToSheet('Orcamentos', quoteSheetRow(quote, 'Cancelado'), quote.handle);
+      saveState();
+      refreshAll();
+    }
+
     function approveQuote(id) {
       const quote = state.quotes.find(q => q.id === id);
       if (!quote) return;
       quote.approved = true;
+      quote.status = 'Aprovado';
       const client = state.clients.find(c => c.id === quote.clientId) || {};
       quote.clientName = client.name || quote.clientName || '';
 
-      sendToSheet('Orcamentos', [quote.handle, new Date().toISOString().slice(0, 10), quote.clientId, quote.clientName, JSON.stringify(quote.items), quote.total, 'Aprovado'], quote.handle);
+      sendToSheet('Orcamentos', quoteSheetRow(quote, 'Aprovado'), quote.handle);
 
       if (!state.services.some(s => s.quoteId === quote.id && s.status !== 'Cancelado')) {
         const service = {
@@ -1149,6 +1299,7 @@
           clientName: quote.clientName,
           date: new Date().toISOString().slice(0, 10),
           value: quote.total,
+          warranty: quote.warranty || '',
           payment: '',
           deliveryDate: '',
           notes: '',
@@ -1174,10 +1325,12 @@
     function generatePDF(id) {
       const q = state.quotes.find(x => x.id === id); if (!q) return;
       const c = state.clients.find(x => x.id === q.clientId) || {};
-      const logoSrc = document.querySelector('.brand-logo')?.src || '';
-      const html = `<!DOCTYPE html><html><head><title>${q.handle}</title><style>body{font-family:Arial;padding:34px;color:#111}.top{display:flex;align-items:center;gap:18px;border-bottom:3px solid #0059b8;padding-bottom:16px;margin-bottom:22px}.logo{width:92px;height:92px;object-fit:contain}.header-text h1{color:#0059b8;margin:0;font-size:30px}.header-text h2{margin:6px 0 0;font-size:22px}.muted{color:#666}.validade{margin-top:18px;padding:12px 14px;background:#eef6ff;border-left:4px solid #0059b8;font-weight:700;color:#123}table{width:100%;border-collapse:collapse;margin-top:20px}th,td{border-bottom:1px solid #ddd;padding:12px;text-align:left}th{background:#eef6ff}.total{font-size:22px;font-weight:800;text-align:right;margin-top:22px}.footer{margin-top:40px;font-size:11px;color:#666}</style></head><body><div class="top"><img class="logo" src="${logoSrc}" alt="Munis Computadores"><div class="header-text"><h1>Munis Computadores</h1><h2>Orçamento ${q.handle}</h2><p class="muted">Cliente: <strong>${escapeHTML(c.name || '')}</strong></p><p class="muted">Telefone: ${escapeHTML(c.phone || '')} | Documento: ${escapeHTML(c.doc || '')}</p></div></div><div class="validade">Este orçamento tem validade de 7 dias.</div><table><thead><tr><th>Serviço/Categoria</th><th>Valor</th></tr></thead><tbody>${q.items.map(i=>`<tr><td>${escapeHTML(i.category)}</td><td>${money(i.value)}</td></tr>`).join('')}</tbody></table><div class="total">Total: ${money(q.total)}</div><div class="footer">Desenvolvido por Roberto Lino</div><script>window.print()<\/script></body></html>`;
+      const logoSrc = document.querySelector('.brand-logo')?.getAttribute('src') || document.querySelector('.brand-logo')?.src || '';
+      const warranty = q.warranty || 'Não informado';
+      const html = `<!DOCTYPE html><html><head><title>${q.handle}</title><style>body{font-family:Arial;padding:34px;color:#111}.top{display:flex;align-items:center;gap:18px;border-bottom:3px solid #0059b8;padding-bottom:16px;margin-bottom:22px}.logo{width:92px;height:92px;object-fit:contain}.header-text h1{color:#0059b8;margin:0;font-size:30px}.header-text h2{margin:6px 0 0;font-size:22px}.muted{color:#666}.validade{margin-top:18px;padding:12px 14px;background:#eef6ff;border-left:4px solid #0059b8;font-weight:700;color:#123}table{width:100%;border-collapse:collapse;margin-top:20px}th,td{border-bottom:1px solid #ddd;padding:12px;text-align:left}th{background:#eef6ff}.total{font-size:22px;font-weight:800;text-align:right;margin-top:22px}.footer{margin-top:40px;font-size:11px;color:#666}</style></head><body><div class="top"><img class="logo" src="${logoSrc}" alt="Munis Computadores"><div class="header-text"><h1>Munis Computadores</h1><h2>Orçamento ${q.handle}</h2><p class="muted">Cliente: <strong>${escapeHTML(c.name || '')}</strong></p><p class="muted">Telefone: ${escapeHTML(c.phone || '')} | Documento: ${escapeHTML(c.doc || '')}</p></div></div><div class="validade">Este orçamento tem validade de 7 dias.<br>Prazo de garantia: ${escapeHTML(warranty)}</div><table><thead><tr><th>Serviço/Categoria</th><th>Valor</th></tr></thead><tbody>${q.items.map(i=>`<tr><td>${escapeHTML(i.category)}</td><td>${money(i.value)}</td></tr>`).join('')}</tbody></table><div class="total">Total: ${money(q.total)}</div><div class="footer">Desenvolvido por Roberto Lino</div><script>window.onload=function(){setTimeout(function(){window.print()},350)}<\/script></body></html>`;
       const win = window.open('', '_blank');
       win.document.write(html); win.document.close();
+      printWindowWhenReady(win);
     }
 
 
@@ -1195,7 +1348,7 @@
         const actions = s.receiptApproved
           ? `<button type="button" class="btn small" onclick="generateServiceReceiptPDF('${s.id}', event)">Gerar PDF</button> <button type="button" class="btn small danger" onclick="cancelServiceReceipt('${s.id}', event)">Cancelar recebimento</button> <span class="badge">Edição bloqueada</span>`
           : `<button type="button" class="btn small secondary" onclick="openServiceModal('${s.id}', event)">Editar</button> <button type="button" class="btn small danger" onclick="cancelService('${s.id}', event)">Cancelar lançamento</button>`;
-        return `<tr><td>${escapeHTML(s.date || '')}</td><td><strong>${escapeHTML(s.handle || '')}</strong></td><td>${escapeHTML(s.clientName || '')}</td><td>${money(s.value)}</td><td>${Number(s.installments || 1)}x</td><td>${receiptCell}</td><td>${actions}</td></tr>`
+        return `<tr><td>${escapeHTML(formatDateBR(s.date || ''))}</td><td><strong>${escapeHTML(s.handle || '')}</strong></td><td>${escapeHTML(s.clientName || '')}</td><td>${money(s.value)}</td><td>${Number(s.installments || 1)}x</td><td>${receiptCell}</td><td>${actions}</td></tr>`
       }).join('')}</tbody></table>` : '<div class="empty">Nenhum atendimento lançado. Aprove um orçamento para ele aparecer nesta tela.</div>';
     }
 
@@ -1294,7 +1447,7 @@
       target.innerHTML = list.length ? `<div class="badge" style="margin-bottom:14px;display:inline-block;">Filtro: ${filterLabel} | Total listado: ${money(total)} | Recebido: ${money(receivedTotal)}</div><table><thead><tr><th>Vencimento</th><th>Cliente</th><th>Orçamento</th><th>Parcela</th><th>Forma</th><th>Valor</th><th>Recebido?</th><th>Status</th></tr></thead><tbody>${list.map(item => {
         const isReceived = (item.status || 'Pendente') === 'Recebido';
         const disabled = (item.status || 'Pendente') === 'Cancelado' ? 'disabled' : '';
-        return `<tr><td>${escapeHTML(item.dueDate || '')}</td><td>${escapeHTML(item.clientName || '')}</td><td>${escapeHTML(item.handle || '')}</td><td>${item.installment}/${item.installments}</td><td>${escapeHTML(item.payment || '')}</td><td>${money(item.value)}</td><td><input type="checkbox" ${isReceived ? 'checked' : ''} ${disabled} onchange="toggleReceivableReceived('${item.id}', this.checked)" /></td><td><span class="badge">${escapeHTML(item.status || 'Pendente')}</span></td></tr>`;
+        return `<tr><td>${escapeHTML(formatDateBR(item.dueDate || ''))}</td><td>${escapeHTML(item.clientName || '')}</td><td>${escapeHTML(item.handle || '')}</td><td>${item.installment}/${item.installments}</td><td>${escapeHTML(item.payment || '')}</td><td>${money(item.value)}</td><td><input type="checkbox" ${isReceived ? 'checked' : ''} ${disabled} onchange="toggleReceivableReceived('${item.id}', this.checked)" /></td><td><span class="badge">${escapeHTML(item.status || 'Pendente')}</span></td></tr>`;
       }).join('')}</tbody></table>` : '<div class="empty">Nenhum recebimento encontrado para o filtro selecionado.</div>';
     }
 
@@ -1399,19 +1552,20 @@
       const receivables = state.receivables
         .filter(r => r.serviceId === service.id && (r.status || 'Pendente') !== 'Cancelado')
         .sort((a, b) => Number(a.installment || 0) - Number(b.installment || 0));
-      const logoSrc = document.querySelector('.brand-logo')?.src || '';
+      const logoSrc = document.querySelector('.brand-logo')?.getAttribute('src') || document.querySelector('.brand-logo')?.src || '';
       const itemsHtml = Array.isArray(quote.items) && quote.items.length
         ? quote.items.map(i => `<tr><td>${escapeHTML(i.category || '')}</td><td>${money(i.value || 0)}</td></tr>`).join('')
         : `<tr><td>Serviço prestado</td><td>${money(service.value || 0)}</td></tr>`;
       const installmentsHtml = receivables.length
-        ? receivables.map(r => `<tr><td>${r.installment}/${r.installments}</td><td>${escapeHTML(r.dueDate || '')}</td><td>${escapeHTML(r.payment || '')}</td><td>${money(r.value || 0)}</td><td>${escapeHTML(r.status || 'Pendente')}</td></tr>`).join('')
+        ? receivables.map(r => `<tr><td>${r.installment}/${r.installments}</td><td>${escapeHTML(formatDateBR(r.dueDate || ''))}</td><td>${escapeHTML(r.payment || '')}</td><td>${money(r.value || 0)}</td><td>${escapeHTML(r.status || 'Pendente')}</td></tr>`).join('')
         : `<tr><td colspan="5">Nenhuma parcela encontrada.</td></tr>`;
       const totalPaid = receivables.filter(r => (r.status || 'Pendente') === 'Recebido').reduce((sum, r) => sum + Number(r.value || 0), 0);
       const totalOpen = receivables.filter(r => (r.status || 'Pendente') !== 'Recebido').reduce((sum, r) => sum + Number(r.value || 0), 0);
-      const html = `<!DOCTYPE html><html><head><title>Resumo financeiro ${service.handle || ''}</title><style>body{font-family:Arial;padding:34px;color:#111}.top{display:flex;align-items:center;gap:18px;border-bottom:3px solid #0059b8;padding-bottom:16px;margin-bottom:22px}.logo{width:92px;height:92px;object-fit:contain}.header-text h1{color:#0059b8;margin:0;font-size:30px}.header-text h2{margin:6px 0 0;font-size:22px}.muted{color:#666}.box{margin:18px 0;padding:12px 14px;background:#eef6ff;border-left:4px solid #0059b8;color:#123}table{width:100%;border-collapse:collapse;margin-top:14px}th,td{border-bottom:1px solid #ddd;padding:10px;text-align:left}th{background:#eef6ff}.summary{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-top:18px}.summary div{padding:12px;background:#f6f8fb;border:1px solid #dde7f3;border-radius:8px}.footer{margin-top:40px;font-size:11px;color:#666}@media print{button{display:none}}</style></head><body><div class="top"><img class="logo" src="${logoSrc}" alt="Munis Computadores"><div class="header-text"><h1>Munis Computadores</h1><h2>Resumo financeiro - ${escapeHTML(service.handle || '')}</h2><p class="muted">Cliente: <strong>${escapeHTML(service.clientName || '')}</strong></p><p class="muted">Data do atendimento: ${escapeHTML(service.date || '')} | Previsão de entrega: ${escapeHTML(service.deliveryDate || '')}</p></div></div><div class="box"><strong>Forma de recebimento:</strong> ${escapeHTML(service.payment || '')}<br><strong>Parcelas:</strong> ${Number(service.installments || 1)}x<br><strong>Valor total:</strong> ${money(service.value || 0)}</div><h3>Resumo do orçamento</h3><table><thead><tr><th>Serviço/Categoria</th><th>Valor</th></tr></thead><tbody>${itemsHtml}</tbody></table><h3>Parcelas a pagar</h3><table><thead><tr><th>Parcela</th><th>Vencimento</th><th>Forma</th><th>Valor</th><th>Status</th></tr></thead><tbody>${installmentsHtml}</tbody></table><div class="summary"><div><strong>Total</strong><br>${money(service.value || 0)}</div><div><strong>Recebido</strong><br>${money(totalPaid)}</div><div><strong>Em aberto</strong><br>${money(totalOpen)}</div></div><div class="footer">Desenvolvido por Roberto Lino</div><script>window.print()<\/script></body></html>`;
+      const html = `<!DOCTYPE html><html><head><title>Resumo financeiro ${service.handle || ''}</title><style>body{font-family:Arial;padding:34px;color:#111}.top{display:flex;align-items:center;gap:18px;border-bottom:3px solid #0059b8;padding-bottom:16px;margin-bottom:22px}.logo{width:92px;height:92px;object-fit:contain}.header-text h1{color:#0059b8;margin:0;font-size:30px}.header-text h2{margin:6px 0 0;font-size:22px}.muted{color:#666}.box{margin:18px 0;padding:12px 14px;background:#eef6ff;border-left:4px solid #0059b8;color:#123}table{width:100%;border-collapse:collapse;margin-top:14px}th,td{border-bottom:1px solid #ddd;padding:10px;text-align:left}th{background:#eef6ff}.summary{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-top:18px}.summary div{padding:12px;background:#f6f8fb;border:1px solid #dde7f3;border-radius:8px}.footer{margin-top:40px;font-size:11px;color:#666}@media print{button{display:none}}</style></head><body><div class="top"><img class="logo" src="${logoSrc}" alt="Munis Computadores"><div class="header-text"><h1>Munis Computadores</h1><h2>Resumo financeiro - ${escapeHTML(service.handle || '')}</h2><p class="muted">Cliente: <strong>${escapeHTML(service.clientName || '')}</strong></p><p class="muted">Data do atendimento: ${escapeHTML(formatDateBR(service.date || ''))} | Previsão de entrega: ${escapeHTML(formatDateBR(service.deliveryDate || ''))}</p></div></div><div class="box"><strong>Forma de recebimento:</strong> ${escapeHTML(service.payment || '')}<br><strong>Parcelas:</strong> ${Number(service.installments || 1)}x<br><strong>Valor total:</strong> ${money(service.value || 0)}<br><strong>Prazo de garantia:</strong> ${escapeHTML(service.warranty || quote.warranty || 'Não informado')}</div><h3>Resumo do orçamento</h3><table><thead><tr><th>Serviço/Categoria</th><th>Valor</th></tr></thead><tbody>${itemsHtml}</tbody></table><h3>Parcelas a pagar</h3><table><thead><tr><th>Parcela</th><th>Vencimento</th><th>Forma</th><th>Valor</th><th>Status</th></tr></thead><tbody>${installmentsHtml}</tbody></table><div class="summary"><div><strong>Total</strong><br>${money(service.value || 0)}</div><div><strong>Recebido</strong><br>${money(totalPaid)}</div><div><strong>Em aberto</strong><br>${money(totalOpen)}</div></div><div class="footer">Desenvolvido por Roberto Lino</div><script>window.onload=function(){setTimeout(function(){window.print()},350)}<\/script></body></html>`;
       const win = window.open('', '_blank');
       win.document.write(html);
       win.document.close();
+      printWindowWhenReady(win);
     }
 
     function cancelServiceReceipt(id, event) {
@@ -1462,9 +1616,10 @@
       const quote = state.quotes.find(q => q.id === service.quoteId || q.handle === service.handle);
       if (quote) {
         quote.approved = false;
+        quote.status = 'Pendente';
         const client = state.clients.find(c => c.id === quote.clientId) || {};
         quote.clientName = client.name || quote.clientName || '';
-        sendToSheet('Orcamentos', [quote.handle, new Date().toISOString().slice(0, 10), quote.clientId, quote.clientName, JSON.stringify(quote.items), quote.total, 'Pendente'], quote.handle);
+        sendToSheet('Orcamentos', quoteSheetRow(quote, 'Pendente'), quote.handle);
       }
 
       service.status = 'Cancelado';
@@ -1736,4 +1891,3 @@
   </script>
 </body>
 </html>
-
