@@ -639,6 +639,7 @@
 
       const findClientId = (name) => (clients.find(c => String(c.name).toLowerCase() === String(name || '').toLowerCase()) || {}).id || '';
       const findQuoteId = (handle) => (quotes.find(q => q.handle === handle) || {}).id || '';
+      const findQuoteFromHandle = (handle) => quotes.find(q => q.handle === handle) || {};
 
       const services = serviceRows.map(row => {
         const handle = String(row[2] || '');
@@ -663,7 +664,6 @@
       }).filter(s => s.id && s.status !== 'Cancelado');
 
       const findServiceId = (handle) => (services.find(s => s.handle === handle) || {}).id || '';
-      const findQuoteFromHandle = (handle) => quotes.find(q => q.handle === handle) || {};
 
       const receivables = receivableRows.map(row => {
         const reference = String(row[3] || '');
