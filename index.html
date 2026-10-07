@@ -525,26 +525,151 @@
         return defaults;
       }
     }
-    function saveState() { localStorage.setItem(STORAGE, JSON.stringify(state)); }
+    function saveState() { try { localStorage.setItem(STORAGE, JSON.stringify(state)); } catch (err) { syncMessage('Não foi possível guardar a cópia local. Baixe uma cópia antes de fechar.'); throw err; } }
 
-    function sendToSheet(aba, valores, chave = '') {
-      if (!APPS_SCRIPT_URL) return;
-      try {
-        fetch(APPS_SCRIPT_URL, {
-          method: 'POST',
-          mode: 'no-cors',
-          headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-          body: JSON.stringify({
-            acao: chave ? 'upsert' : 'append',
-            aba,
-            chave,
-            valores
-          })
-        });
-      } catch (error) {
-        console.warn('Não foi possível enviar para o Google Sheets:', error);
-      }
+    const OUTBOX = STORAGE + '_pedidos_v2';
+    let serverRevision = null;
+    let sheetReady = false;
+    let flushRunning = false;
+    let queueError = '';
+    let pendingOperations = [];
+    let outbox = [];
+    try { outbox = JSON.parse(localStorage.getItem(OUTBOX) || '[]'); if (!Array.isArray(outbox)) outbox = []; } catch (_) { queueError = 'Fila local inválida. Exporte os dados locais antes de atualizar.'; }
+    function persistOutbox() { try { localStorage.setItem(OUTBOX, JSON.stringify(outbox)); } catch (err) { queueError='Não foi possível guardar o pedido neste navegador. Baixe a cópia local antes de fechar.'; updateSyncMessage(); throw err; } }
+    function syncMessage(text) {
+      const el = document.getElementById('syncText');
+      if (el) el.textContent = text;
     }
+    function updateSyncMessage() {
+      syncMessage(queueError ? 'Falha ao salvar: ' + queueError + ' — alterações locais aguardam confirmação.' : outbox.length || pendingOperations.length ? 'Salvando na planilha… não feche esta página.' : sheetReady ? 'Dados sincronizados com a planilha.' : 'Aguardando atualização da planilha.');
+    }
+    function jsonp(params) {
+      return new Promise((resolve, reject) => {
+        const callback = 'munis_' + uid().replace(/[^a-z0-9]/gi, '');
+        const script = document.createElement('script');
+        let timer;
+        function finish(err, result) {
+          clearTimeout(timer); script.remove(); delete window[callback];
+          if (err) reject(err); else resolve(result);
+        }
+        window[callback] = result => finish(null, result);
+        script.onerror = () => finish(new Error('Não foi possível consultar o Apps Script.'));
+        script.src = APPS_SCRIPT_URL + '?' + new URLSearchParams({...params, callback, t: Date.now()});
+        timer = setTimeout(() => finish(new Error('A consulta à planilha demorou demais.')), 30000);
+        document.body.appendChild(script);
+      });
+    }
+    async function confirmRequest(job) {
+      // Um POST no-cors não permite ler a resposta. A confirmação vem por GET
+      // usando o mesmo identificador registrado de forma durável no servidor.
+      for (let attempt = 0; attempt < 3; attempt++) {
+        try {
+          const previous = await jsonp({acao:'status', requestId:job.requestId});
+          if (previous.apiVersion !== 2) throw new Error('Publique o novo Code.gs antes de usar este index.');
+          if (previous.status !== 'aguardando') return previous;
+          await fetch(APPS_SCRIPT_URL, {method:'POST', mode:'no-cors', headers:{'Content-Type':'text/plain;charset=utf-8'}, body:JSON.stringify(job)});
+          for (let poll = 0; poll < 5; poll++) {
+            const result = await jsonp({acao:'status',requestId:job.requestId});
+            if (result.status !== 'aguardando') return result;
+            await new Promise(resolve=>setTimeout(resolve,1000));
+          }
+        } catch (err) { if (attempt === 2) throw err; }
+      }
+      throw new Error('Sem confirmação de gravação. Use Tentar salvar novamente; o mesmo pedido não será duplicado.');
+    }
+    function sendToSheet(aba, valores, chave = '') {
+      pendingOperations.push({aba, valores:JSON.parse(JSON.stringify(valores)), chave:chave || String(valores[0]), acao:'upsert'});
+      scheduleOperations();
+    }
+    let batchScheduled = false;
+    function scheduleOperations() {
+      if (batchScheduled) return;
+      batchScheduled = true;
+      queueMicrotask(() => {
+        batchScheduled = false;
+        if (!pendingOperations.length) return;
+        outbox.push({requestId:uid(),acao:'batch',expectedRevision:serverRevision,operacoes:pendingOperations.splice(0)});
+        persistOutbox(); updateSyncMessage(); flushOutbox();
+      });
+    }
+    function applyCreatedQuote(job,result) {
+      if (!job.localQuote) return;
+      const quote = {...job.localQuote, id:result.handle,handle:result.handle};
+      if (!state.quotes.some(q=>q.handle===quote.handle)) state.quotes.push(quote);
+      state.quoteSequence = Math.max(state.quoteSequence, Number(result.handle.replace(/\D/g,''))+1);
+      saveState(); resetQuoteForm(); refreshAll();
+    }
+    async function flushOutbox() {
+      if (flushRunning || queueError) return;
+      flushRunning = true;
+      try {
+        while (outbox.length) {
+          const job = outbox[0];
+          updateSyncMessage();
+          const result = await confirmRequest(job);
+          if (result.status !== 'sucesso') throw new Error(result.mensagem || 'Pedido recusado.');
+          serverRevision = result.revision;
+          applyCreatedQuote(job,result);
+          outbox.shift(); persistOutbox();
+        }
+      } catch (err) { queueError = err.message; console.error(err); }
+      finally { flushRunning = false; updateSyncMessage(); }
+    }
+    async function retrySave() { queueError = ''; await flushOutbox(); if (!outbox.length) await loadDataFromSheets(); }
+    function exportLocalBackup() {
+      const blob = new Blob([JSON.stringify({state,outbox},null,2)],{type:'application/json'});
+      const url = URL.createObjectURL(blob); const a = document.createElement('a');
+      a.href=url; a.download='munis-backup-local.json'; a.click(); setTimeout(()=>URL.revokeObjectURL(url),1000);
+    }
+    async function reconcileLocal() {
+      if (outbox.length && !confirm('A cópia local será substituída pela planilha. Antes, use Baixar cópia local para preservar alterações ainda não confirmadas. Continuar?')) return;
+      if (flushRunning) return;
+      // Verifica pedidos ambíguos antes de descartar a fila local.
+      try {
+        for (const job of outbox) {
+          const result=await jsonp({acao:'status',requestId:job.requestId});
+          if (result.status==='aguardando') {
+            syncMessage('Pedido ainda sem resultado. Tente salvar novamente antes de substituir os dados locais.'); return;
+          }
+        }
+        const result=await jsonp({acao:'listar'});
+        if (result.status!=='sucesso' || result.apiVersion!==2) throw new Error(result.mensagem || 'Publique o novo Apps Script.');
+        applySheetData(result.dados); serverRevision=result.revision; sheetReady=true;
+        outbox=[]; persistOutbox(); queueError=''; refreshAll(); updateSyncMessage();
+        showDiagnostics(result);
+      } catch (err) { syncMessage(err.message); }
+    }
+    function showDiagnostics(result) {
+      const issues=result.diagnostico?.problemas || [];
+      if (issues.length) syncMessage('Planilha carregada. Revisão necessária: '+issues.join(' | '));
+    }
+    document.addEventListener('submit', event => {
+      if (!sheetReady || outbox.length || pendingOperations.length || flushRunning || queueError) {
+        event.preventDefault(); event.stopImmediatePropagation();
+        syncMessage('Atualize a planilha ou conclua o salvamento pendente antes de salvar outra alteração.');
+      }
+    },true);
+    document.addEventListener('click', event => {
+      const button=event.target.closest('button');
+      if (button && /^(approveQuote|cancelQuote|approveServiceReceipt|cancelServiceReceipt|cancelService|removeCategory|removePayment|removeWarranty|addCategory|addPayment|addWarranty)\(/.test(button.getAttribute('onclick') || '') && (!sheetReady || outbox.length || pendingOperations.length || flushRunning || queueError)) {
+        event.preventDefault(); event.stopImmediatePropagation(); syncMessage('Conclua a sincronização antes de alterar os dados.');
+      }
+    },true);
+    document.addEventListener('change', event => {
+      if (/toggleReceivableReceived/.test(event.target.getAttribute('onchange') || '') && (!sheetReady || outbox.length || pendingOperations.length || flushRunning || queueError)) {
+        event.stopImmediatePropagation(); renderReceivables(); syncMessage('Conclua a sincronização antes de alterar o recebimento.');
+      }
+    },true);
+    window.addEventListener('beforeunload', event=> { if(outbox.length || pendingOperations.length) { event.preventDefault(); event.returnValue=''; } });
+    function dateOnly(value) {
+      const text=String(value || '').trim();
+      let m=text.match(/^(\d{4})-(\d{2})-(\d{2})(?:$|T)/);
+      if (!m) { const br=text.match(/^(\d{2})\/(\d{2})\/(\d{4})$/); if(br) m=[br[0],br[3],br[2],br[1]]; }
+      if (!m) return '';
+      const d=new Date(Date.UTC(Number(m[1]),Number(m[2])-1,Number(m[3])));
+      return d.getUTCFullYear()===Number(m[1]) && d.getUTCMonth()+1===Number(m[2]) && d.getUTCDate()===Number(m[3]) ? m[1]+'-'+m[2]+'-'+m[3] : '';
+    }
+    function todayISO() { return new Intl.DateTimeFormat('sv-SE',{timeZone:'America/Sao_Paulo',year:'numeric',month:'2-digit',day:'2-digit'}).format(new Date()); }
 
 
     function parseBRNumber(value) {
@@ -559,7 +684,7 @@
 
     function isHeaderRow(row) {
       const first = String(row?.[0] ?? '').toLowerCase();
-      return ['id', 'handle', 'categoria', 'formarecebimento', 'garantia', 'datarecebimento'].some(h => first.includes(h));
+      return ['id', 'handle', 'categoria', 'formarecebimento', 'garantia', 'datarecebimento'].includes(first.trim());
     }
 
     function cleanRows(rows) {
@@ -633,7 +758,7 @@
           warranty,
           status,
           approved: status.toLowerCase() === 'aprovado',
-          createdAt: row[1] ? new Date(row[1]).toISOString?.() || String(row[1]) : new Date().toISOString()
+          createdAt: dateOnly(row[1]) || todayISO()
         };
       }).filter(q => q.handle);
 
@@ -646,20 +771,20 @@
         const clientName = String(row[3] || '');
         return {
           id: String(row[0] || uid()),
-          date: String(row[1] || ''),
+          date: dateOnly(row[1]),
           handle,
           clientName,
-          clientId: findClientId(clientName),
+          clientId: String(row[13] || findQuoteFromHandle(handle).clientId || findClientId(clientName)),
           quoteId: findQuoteId(handle),
-          warranty: (findQuoteFromHandle(handle) || {}).warranty || '',
+          warranty: String(row[11] || findQuoteFromHandle(handle).warranty || ''),
           value: parseBRNumber(row[4]),
           payment: String(row[5] || ''),
-          deliveryDate: String(row[6] || ''),
+          deliveryDate: dateOnly(row[6]),
           notes: String(row[7] || ''),
           status: String(row[8] || 'Ativo'),
           installments: Number(row[9] || 1),
           receiptApproved: String(row[10] || '').toLowerCase() === 'sim',
-          receiptApprovedDate: ''
+          receiptApprovedDate: dateOnly(row[12])
         };
       }).filter(s => s.id && s.status !== 'Cancelado');
 
@@ -672,18 +797,18 @@
         const quote = findQuoteFromHandle(handle);
         return {
           id: String(row[0] || uid()),
-          dueDate: String(row[1] || ''),
+          dueDate: dateOnly(row[1]),
           clientName: String(row[2] || ''),
           reference,
           value: parseBRNumber(row[4]),
           payment: String(row[5] || ''),
           status: String(row[6] || 'Pendente'),
-          receivedDate: String(row[7] || ''),
+          receivedDate: dateOnly(row[7]),
           handle,
-          serviceId: findServiceId(handle),
+          serviceId: String(row[8] || findServiceId(handle)),
           quoteId: quote.id || '',
-          installment: installmentInfo.installment,
-          installments: installmentInfo.installments
+          installment: Number(row[10] || installmentInfo.installment),
+          installments: Number(row[11] || installmentInfo.installments)
         };
       }).filter(r => r.id && r.status !== 'Cancelado');
 
@@ -693,14 +818,14 @@
       }, 0) + 1;
 
       const hasSheetData = clientRows.length || categoryRows.length || paymentRows.length || warrantyRows.length || quoteRows.length || serviceRows.length || receivableRows.length;
-      if (!hasSheetData) return false;
+      if (!Array.isArray(data.Orcamentos) || !Array.isArray(data.Clientes)) return false;
 
       state = {
         ...defaults,
         clients,
-        categories: uniqueByText([...defaults.categories, ...categoriesFromSheet]),
-        payments: uniqueByText([...defaults.payments, ...paymentsFromSheet]),
-        warranties: uniqueByText([...defaults.warranties, ...warrantiesFromSheet]),
+        categories: uniqueByText(categoriesFromSheet),
+        payments: uniqueByText(paymentsFromSheet),
+        warranties: uniqueByText(warrantiesFromSheet),
         quotes,
         services,
         receivables,
@@ -711,33 +836,17 @@
       return true;
     }
 
-    function loadDataFromSheets() {
-      if (!APPS_SCRIPT_URL) return Promise.resolve(false);
-
-      return new Promise(resolve => {
-        const callbackName = 'munisLoadSheets_' + Date.now();
-        const script = document.createElement('script');
-        let finished = false;
-
-        function done(ok) {
-          if (finished) return;
-          finished = true;
-          try { delete window[callbackName]; } catch (error) { window[callbackName] = undefined; }
-          if (script.parentNode) script.parentNode.removeChild(script);
-          resolve(ok);
-        }
-
-        window[callbackName] = payload => {
-          const ok = applySheetData(payload && payload.dados ? payload.dados : payload);
-          if (ok) refreshAll();
-          done(ok);
-        };
-
-        script.onerror = () => done(false);
-        script.src = APPS_SCRIPT_URL + '?acao=listar&callback=' + encodeURIComponent(callbackName) + '&t=' + Date.now();
-        document.body.appendChild(script);
-        setTimeout(() => done(false), 12000);
-      });
+    async function loadDataFromSheets() {
+      if (outbox.length || pendingOperations.length || flushRunning) { updateSyncMessage(); return false; }
+      sheetReady=false; syncMessage('Atualizando dados da planilha…');
+      try {
+        const result=await jsonp({acao:'listar'});
+        if (result.apiVersion!==2) throw new Error('Publique o novo Code.gs para habilitar gravações confirmadas.');
+        if (result.status!=='sucesso') throw new Error(result.mensagem || 'Falha na leitura.');
+        if (!applySheetData(result.dados)) throw new Error('Resposta de dados inválida.');
+        serverRevision=result.revision; sheetReady=true;
+        refreshAll(); updateSyncMessage(); showDiagnostics(result); return true;
+      } catch (err) { syncMessage('Não foi possível atualizar: '+err.message+' Exibindo a cópia local.'); return false; }
     }
 
     function normalizeLists() {
@@ -857,7 +966,7 @@
           ? (service.receiptApproved ? 'Recebimento aprovado' : 'Atendimento lançado')
           : 'Sem atendimento';
         const detailRows = rec.items.length
-          ? `<div style="margin-top:8px;font-size:12px;color:var(--muted);">${rec.items.map(r => `${escapeHTML(String(r.installment || ''))}/${escapeHTML(String(r.installments || ''))} - ${escapeHTML(formatDateBR(r.dueDate || ''))} - ${money(r.value)} - ${escapeHTML(r.status || 'Pendente')}`).join('<br>')}</div>`
+          ? `<div style="margin-top:8px;font-size:12px;color:var(--muted);">${rec.items.map(r => `${escapeHTML(String(r.installment || ''))}/${escapeHTML(String(r.installments || ''))} - ${escapeHTML(formatDateBR(r.dueDate || ''))} - ${money(r.value)} - ${escapeHTML(getReceivableRealStatus(r))}`).join('<br>')}</div>`
           : '';
         return `<tr>
           <td>${escapeHTML(q.handle || '')}</td>
@@ -947,7 +1056,7 @@
       sendToSheet('Categorias', [uid(), value]);
       input.value = '';
       refreshAll();
-      showConfigMessage('categoryMessage', 'Categoria cadastrada com sucesso.');
+      showConfigMessage('categoryMessage', 'Categoria incluída. Aguarde a confirmação na barra de sincronização.');
       input.focus();
     }
 
@@ -976,7 +1085,7 @@
       sendToSheet('FormasRecebimento', [uid(), value]);
       input.value = '';
       refreshAll();
-      showConfigMessage('paymentMessage', 'Forma de recebimento cadastrada com sucesso.');
+      showConfigMessage('paymentMessage', 'Forma incluída. Aguarde a confirmação na barra de sincronização.');
       input.focus();
     }
 
@@ -1006,7 +1115,7 @@
       sendToSheet('Garantias', [uid(), value]);
       input.value = '';
       refreshAll();
-      showConfigMessage('warrantyMessage', 'Garantia cadastrada com sucesso.');
+      showConfigMessage('warrantyMessage', 'Garantia incluída. Aguarde a confirmação na barra de sincronização.');
       input.focus();
     }
 
@@ -1036,18 +1145,24 @@
 
     function removeCategory(index) {
       normalizeLists();
+      const name=state.categories[index];
+      pendingOperations.push({aba:'Categorias',acao:'removerLista',nome:name}); scheduleOperations();
       state.categories.splice(index, 1);
       saveState();
       refreshAll();
     }
     function removePayment(index) {
       normalizeLists();
+      const name=state.payments[index];
+      pendingOperations.push({aba:'FormasRecebimento',acao:'removerLista',nome:name}); scheduleOperations();
       state.payments.splice(index, 1);
       saveState();
       refreshAll();
     }
     function removeWarranty(index) {
       normalizeLists();
+      const name=state.warranties[index];
+      pendingOperations.push({aba:'Garantias',acao:'removerLista',nome:name}); scheduleOperations();
       state.warranties.splice(index, 1);
       saveState();
       refreshAll();
@@ -1093,9 +1208,9 @@
       if (serviceEditPayment) serviceEditPayment.innerHTML = paymentOptions;
 
       const quoteHandle = document.getElementById('quoteHandle');
-      if (quoteHandle && !quoteHandle.value) quoteHandle.value = nextQuoteHandle();
+      if (quoteHandle && !document.getElementById('quoteId').value) quoteHandle.value = nextQuoteHandle();
     }
-    function nextQuoteHandle() { return 'Orc-' + String(state.quoteSequence).padStart(4, '0'); }
+    function nextQuoteHandle() { return 'Orc-' + String(Math.max(Number(state.quoteSequence) || 1, ...state.quotes.map(q=>(Number((String(q.handle).match(/Orc-(\d+)/i)||[])[1]) || 0)+1))).padStart(4, '0'); }
 
     function addQuoteItem() {
       const category = document.getElementById('quoteCategory').value;
@@ -1106,11 +1221,11 @@
       renderQuotePreview();
     }
     function removeQuoteItem(index) { quoteItems.splice(index, 1); renderQuotePreview(); }
-    document.getElementById('quoteForm').addEventListener('submit', e => {
+    document.getElementById('quoteForm').addEventListener('submit', async e => {
       e.preventDefault();
       const id = document.getElementById('quoteId').value || uid();
       const isNew = !document.getElementById('quoteId').value;
-      const handle = document.getElementById('quoteHandle').value || nextQuoteHandle();
+      const handle = isNew ? nextQuoteHandle() : (state.quotes.find(q=>q.id===id)?.handle || '');
       const clientId = document.getElementById('quoteClient').value;
       if (!clientId || quoteItems.length === 0) return;
       const existingQuote = state.quotes.find(q => q.id === id);
@@ -1124,12 +1239,17 @@
         return;
       }
       const client = state.clients.find(c => c.id === clientId) || {};
-      const quote = { id, handle, clientId, clientName: client.name || '', items: quoteItems, total: quoteItems.reduce((s,i)=>s+i.value,0), warranty, status: 'Pendente', approved: false, createdAt: existingQuote?.createdAt || new Date().toISOString() };
-      const index = state.quotes.findIndex(q => q.id === id);
-      if (index >= 0) state.quotes[index] = quote; else state.quotes.push(quote);
-      sendToSheet('Orcamentos', quoteSheetRow(quote, 'Pendente'), quote.handle);
-      if (isNew) state.quoteSequence += 1;
-      saveState(); resetQuoteForm(); refreshAll();
+      const quote = { id, handle, clientId, clientName: client.name || '', items: quoteItems.map(item=>({...item})), total: Math.round(quoteItems.reduce((s,i)=>s+Number(i.value),0)*100)/100, warranty, status: 'Pendente', approved: false, createdAt: existingQuote?.createdAt || new Date().toISOString() };
+      if (isNew) {
+        const job={requestId:uid(),acao:'criarOrcamento',expectedRevision:serverRevision,valores:quoteSheetRow(quote),localQuote:quote};
+        outbox.push(job); persistOutbox(); await flushOutbox();
+      } else {
+        const index=state.quotes.findIndex(q=>q.id===id);
+        if(index<0) return;
+        state.quotes[index]=quote;
+        sendToSheet('Orcamentos',quoteSheetRow(quote),quote.handle);
+        saveState(); resetQuoteForm(); refreshAll();
+      }
     });
     function resetQuoteForm() {
       document.getElementById('quoteForm').reset();
@@ -1194,7 +1314,7 @@
             ? `<button type="button" class="btn small" onclick="generatePDF('${q.id}')">Gerar PDF</button> <span class="badge">Edição bloqueada</span>`
             : `<button type="button" class="btn small secondary" onclick="editQuote('${q.id}')">Editar</button> <button type="button" class="btn small" onclick="generatePDF('${q.id}')">Gerar PDF</button> <button type="button" class="btn small" onclick="approveQuote('${q.id}')">Aprovar</button> <button type="button" class="btn small danger" onclick="cancelQuote('${q.id}', event)">Cancelar</button>`;
         const statusLabel = isCanceled ? 'Cancelado' : q.approved ? 'Aprovado' : 'Em aberto';
-        return `<tr><td><strong>${q.handle}</strong></td><td>${escapeHTML(c?.name || '')}</td><td>${money(q.total)}</td><td><span class="badge">${statusLabel}</span></td><td>${actions}</td></tr>`
+        return `<tr><td><strong>${escapeHTML(q.handle)}</strong></td><td>${escapeHTML(c?.name || '')}</td><td>${money(q.total)}</td><td><span class="badge">${statusLabel}</span></td><td>${actions}</td></tr>`
       }).join('')}</tbody></table>` : '<div class="empty">Nenhum orçamento salvo.</div>';
     }
 
@@ -1226,7 +1346,10 @@
         service.notes || '',
         service.status || 'Ativo',
         service.installments || 1,
-        service.receiptApproved ? 'Sim' : 'Não'
+        service.receiptApproved ? 'Sim' : 'Não',
+        service.warranty || '',
+        service.receiptApprovedDate || '',
+        service.clientId || ''
       ];
     }
 
@@ -1238,15 +1361,19 @@
         item.reference || '',
         item.value || 0,
         item.payment || '',
-        item.status || 'Pendente',
-        item.receivedDate || ''
+        getReceivableRealStatus(item),
+        item.receivedDate || '',
+        item.serviceId || '',
+        item.handle || '',
+        item.installment || 1,
+        item.installments || 1
       ];
     }
 
-    function addDays(date, days) {
-      const d = new Date(date + 'T00:00:00');
-      d.setDate(d.getDate() + days);
-      return d.toISOString().slice(0, 10);
+    function addDays(date,days) {
+      const text=dateOnly(date); if (!text) throw new Error('Data inválida.');
+      const [y,m,d]=text.split('-').map(Number);
+      const value=new Date(Date.UTC(y,m-1,d+days)); return value.toISOString().slice(0,10);
     }
 
     function splitValueInCents(total, parts) {
@@ -1282,7 +1409,7 @@
 
     function approveQuote(id) {
       const quote = state.quotes.find(q => q.id === id);
-      if (!quote) return;
+      if (!quote || quote.approved || quote.status === 'Cancelado') return;
       quote.approved = true;
       quote.status = 'Aprovado';
       const client = state.clients.find(c => c.id === quote.clientId) || {};
@@ -1297,7 +1424,7 @@
           handle: quote.handle,
           clientId: quote.clientId,
           clientName: quote.clientName,
-          date: new Date().toISOString().slice(0, 10),
+          date: todayISO(),
           value: quote.total,
           warranty: quote.warranty || '',
           payment: '',
@@ -1369,8 +1496,10 @@
 
       if (service.receiptApproved) return;
 
-      const installments = Math.min(12, Math.max(1, Number(service.installments || 1)));
-      const today = new Date().toISOString().slice(0, 10);
+      const installments = Number(service.installments || 1);
+      if (!Number.isInteger(installments) || installments < 1 || installments > 12) { alert('Informe de 1 a 12 parcelas inteiras.'); return; }
+      if (state.receivables.some(r=>r.serviceId===service.id && r.status!=='Cancelado')) { alert('Este atendimento já possui parcelas. Atualize os dados.'); return; }
+      const today = todayISO();
       const values = splitValueInCents(service.value, installments);
 
       const newReceivables = values.map((value, index) => ({
@@ -1405,13 +1534,7 @@
       renderReceivables();
     }
 
-    function isOverdue(dateText) {
-      if (!dateText) return false;
-      const today = new Date();
-      today.setHours(0, 0, 0, 0);
-      const due = new Date(dateText + 'T00:00:00');
-      return due < today;
-    }
+    function isOverdue(dateText) { const date=dateOnly(dateText); return !!date && date < todayISO(); }
 
     function renderReceivables() {
       const search = (document.getElementById('receivableSearch')?.value || '').trim().toLowerCase();
@@ -1447,7 +1570,7 @@
       target.innerHTML = list.length ? `<div class="badge" style="margin-bottom:14px;display:inline-block;">Filtro: ${filterLabel} | Total listado: ${money(total)} | Recebido: ${money(receivedTotal)}</div><table><thead><tr><th>Vencimento</th><th>Cliente</th><th>Orçamento</th><th>Parcela</th><th>Forma</th><th>Valor</th><th>Recebido?</th><th>Status</th></tr></thead><tbody>${list.map(item => {
         const isReceived = (item.status || 'Pendente') === 'Recebido';
         const disabled = (item.status || 'Pendente') === 'Cancelado' ? 'disabled' : '';
-        return `<tr><td>${escapeHTML(formatDateBR(item.dueDate || ''))}</td><td>${escapeHTML(item.clientName || '')}</td><td>${escapeHTML(item.handle || '')}</td><td>${item.installment}/${item.installments}</td><td>${escapeHTML(item.payment || '')}</td><td>${money(item.value)}</td><td><input type="checkbox" ${isReceived ? 'checked' : ''} ${disabled} onchange="toggleReceivableReceived('${item.id}', this.checked)" /></td><td><span class="badge">${escapeHTML(item.status || 'Pendente')}</span></td></tr>`;
+        return `<tr><td>${escapeHTML(formatDateBR(item.dueDate || ''))}</td><td>${escapeHTML(item.clientName || '')}</td><td>${escapeHTML(item.handle || '')}</td><td>${item.installment}/${item.installments}</td><td>${escapeHTML(item.payment || '')}</td><td>${money(item.value)}</td><td><input type="checkbox" ${isReceived ? 'checked' : ''} ${disabled} onchange="toggleReceivableReceived('${item.id}', this.checked)" /></td><td><span class="badge">${escapeHTML(getReceivableRealStatus(item))}</span></td></tr>`;
       }).join('')}</tbody></table>` : '<div class="empty">Nenhum recebimento encontrado para o filtro selecionado.</div>';
     }
 
@@ -1482,7 +1605,7 @@
       document.getElementById('serviceEditHandle').value = service.handle || '';
       document.getElementById('serviceEditClient').value = service.clientName || '';
       document.getElementById('serviceEditValue').value = money(service.value);
-      document.getElementById('serviceEditDate').value = service.date || new Date().toISOString().slice(0, 10);
+      document.getElementById('serviceEditDate').value = service.date || todayISO();
       document.getElementById('serviceEditPayment').value = service.payment || '';
       document.getElementById('serviceEditInstallments').value = String(service.installments || 1);
       document.getElementById('serviceEditDelivery').value = service.deliveryDate || '';
@@ -1515,6 +1638,8 @@
         return;
       }
 
+      const parts=Number(document.getElementById('serviceEditInstallments').value);
+      if (!dateOnly(document.getElementById('serviceEditDate').value) || !Number.isInteger(parts) || parts<1 || parts>12) { alert('Informe uma data válida e de 1 a 12 parcelas.'); return; }
       service.date = document.getElementById('serviceEditDate').value;
       service.payment = document.getElementById('serviceEditPayment').value;
       service.installments = Number(document.getElementById('serviceEditInstallments').value || 1);
@@ -1532,10 +1657,10 @@
       const item = state.receivables.find(r => r.id === id);
       if (!item || (item.status || 'Pendente') === 'Cancelado') return;
       item.status = checked ? 'Recebido' : 'Pendente';
-      item.receivedDate = checked ? new Date().toISOString().slice(0, 10) : '';
+      item.receivedDate = checked ? todayISO() : '';
       sendToSheet('Recebimentos', receivableSheetRow(item), item.id);
       saveState();
-      renderReceivables();
+      renderReceivables(); renderDashboard();
     }
 
     function generateServiceReceiptPDF(id, event) {
@@ -1557,7 +1682,7 @@
         ? quote.items.map(i => `<tr><td>${escapeHTML(i.category || '')}</td><td>${money(i.value || 0)}</td></tr>`).join('')
         : `<tr><td>Serviço prestado</td><td>${money(service.value || 0)}</td></tr>`;
       const installmentsHtml = receivables.length
-        ? receivables.map(r => `<tr><td>${r.installment}/${r.installments}</td><td>${escapeHTML(formatDateBR(r.dueDate || ''))}</td><td>${escapeHTML(r.payment || '')}</td><td>${money(r.value || 0)}</td><td>${escapeHTML(r.status || 'Pendente')}</td></tr>`).join('')
+        ? receivables.map(r => `<tr><td>${r.installment}/${r.installments}</td><td>${escapeHTML(formatDateBR(r.dueDate || ''))}</td><td>${escapeHTML(r.payment || '')}</td><td>${money(r.value || 0)}</td><td>${escapeHTML(getReceivableRealStatus(r))}</td></tr>`).join('')
         : `<tr><td colspan="5">Nenhuma parcela encontrada.</td></tr>`;
       const totalPaid = receivables.filter(r => (r.status || 'Pendente') === 'Recebido').reduce((sum, r) => sum + Number(r.value || 0), 0);
       const totalOpen = receivables.filter(r => (r.status || 'Pendente') !== 'Recebido').reduce((sum, r) => sum + Number(r.value || 0), 0);
@@ -1578,6 +1703,7 @@
       if (!service || service.status === 'Cancelado') return;
 
       const relatedReceivables = state.receivables.filter(r => r.serviceId === service.id && (r.status || 'Pendente') !== 'Cancelado');
+      if (relatedReceivables.some(r=>r.status==='Recebido')) { alert('Há parcelas já recebidas. Não é possível cancelar este recebimento.'); return; }
       const ok = confirm(`Cancelar o recebimento aprovado do atendimento ${service.handle || ''}? As parcelas serão removidas da lista de recebimentos e o atendimento voltará a ficar editável.`);
       if (!ok) return;
 
@@ -1650,9 +1776,8 @@
 
 
     function parseDateSafe(value) {
-      if (!value) return null;
-      const d = new Date(String(value).slice(0, 10) + 'T00:00:00');
-      return isNaN(d.getTime()) ? null : d;
+      const text=dateOnly(value); if(!text) return null;
+      const [y,m,d]=text.split('-').map(Number); return new Date(y,m-1,d);
     }
 
     function monthKey(dateText) {
@@ -1880,13 +2005,18 @@
     function refreshAll() { normalizeLists(); fillSelects(); renderClients(); renderConfigs(); renderQuotePreview(); renderQuotes(); renderServices(); renderReceivables(); renderDashboard(); }
     function escapeHTML(value) { return String(value ?? '').replace(/[&<>'"]/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[m])); }
     function escapeAttr(value) { return escapeHTML(value).replace(/`/g, '&#96;'); }
-    function initApp() {
-      refreshAll();
-      openScreen(sessionStorage.getItem('munisActiveScreen') || 'dashboard', false);
-      loadDataFromSheets().then(() => {
-        openScreen(sessionStorage.getItem('munisActiveScreen') || 'dashboard', false);
-      });
+    async function initApp() {
+      const banner=document.createElement('div');
+      banner.style.cssText='position:sticky;top:0;z-index:100;background:#eef6ff;color:#123;padding:10px 16px;border-bottom:1px solid #c4d8ef;font-size:13px;display:flex;gap:8px;flex-wrap:wrap;align-items:center';
+      banner.innerHTML='<span id="syncText" role="status">Atualizando planilha…</span><button type="button" onclick="loadDataFromSheets()">Atualizar dados</button><button type="button" onclick="retrySave()">Tentar salvar novamente</button><button type="button" onclick="exportLocalBackup()">Baixar cópia local</button><button type="button" onclick="reconcileLocal()">Usar dados da planilha</button>';
+      document.body.prepend(banner);
+      refreshAll(); openScreen(sessionStorage.getItem('munisActiveScreen') || 'dashboard',false);
+      if(outbox.length) await flushOutbox();
+      await loadDataFromSheets();
+      setInterval(()=> { renderReceivables(); renderDashboard(); },60000);
+      document.addEventListener('visibilitychange',()=> { if(!document.hidden) {renderReceivables();renderDashboard();} });
     }
+
     initApp();
   </script>
 </body>
