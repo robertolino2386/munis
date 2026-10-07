@@ -2006,10 +2006,6 @@
     function escapeHTML(value) { return String(value ?? '').replace(/[&<>'"]/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[m])); }
     function escapeAttr(value) { return escapeHTML(value).replace(/`/g, '&#96;'); }
     async function initApp() {
-      const banner=document.createElement('div');
-      banner.style.cssText='position:sticky;top:0;z-index:100;background:#eef6ff;color:#123;padding:10px 16px;border-bottom:1px solid #c4d8ef;font-size:13px;display:flex;gap:8px;flex-wrap:wrap;align-items:center';
-      banner.innerHTML='<span id="syncText" role="status">Atualizando planilha…</span><button type="button" onclick="loadDataFromSheets()">Atualizar dados</button><button type="button" onclick="retrySave()">Tentar salvar novamente</button><button type="button" onclick="exportLocalBackup()">Baixar cópia local</button><button type="button" onclick="reconcileLocal()">Usar dados da planilha</button>';
-      document.body.prepend(banner);
       refreshAll(); openScreen(sessionStorage.getItem('munisActiveScreen') || 'dashboard',false);
       if(outbox.length) await flushOutbox();
       await loadDataFromSheets();
